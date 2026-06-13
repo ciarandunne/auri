@@ -2920,20 +2920,7 @@ function renderSpotifySettings(status) {
   `;
 }
 
-function renderHomePage() {
-  const scans = getRecentScans(50);
-  const cards = getCards(100);
-  const mediaItems = getMediaItems(100);
-  const actionEvents = getActionEvents(20);
-  const sonosSettings = getSonosSettings();
-  const sonosDevices = getSonosDevices();
-  const receivers = getReceivers();
-  const espHomeSettings = getEspHomeSettings();
-  const espHomeStatus = getEspHomeBridgeStatus();
-  const readerTestActionSettings = getReaderTestActionSettings();
-  const spotifyStatus = getSpotifyStatus();
-  const cardCount = countCards.get().card_count;
-  const actionEventCount = countActionEvents.get().action_event_count;
+function renderRecentScans(scans) {
   const rows = scans
     .map(
       (scan) => {
@@ -2999,6 +2986,31 @@ function renderHomePage() {
       </div>
     `
     : `<div class="empty">No scans received yet.</div>`;
+
+  return table;
+}
+
+function renderPageShell(activePage, pageTitle, pageDescription, content) {
+  const scans = getRecentScans(50);
+  const mediaItems = getMediaItems(100);
+  const sonosSettings = getSonosSettings();
+  const receivers = getReceivers();
+  const cardCount = countCards.get().card_count;
+  const actionEventCount = countActionEvents.get().action_event_count;
+  const navItems = [
+    ["/media", "Media"],
+    ["/cards", "Cards"],
+    ["/activity", "Activity"],
+    ["/devices", "Devices"],
+    ["/reader", "Reader"],
+  ];
+  const nav = navItems
+    .map(([href, label]) => {
+      const active = activePage === href ? " active" : "";
+      const aria = active ? ` aria-current="page"` : "";
+      return `<a class="${active.trim()}" href="${href}"${aria}>${label}</a>`;
+    })
+    .join("");
 
   return `<!doctype html>
 <html lang="en">
@@ -3109,6 +3121,12 @@ function renderHomePage() {
       .page-nav a:hover {
         background: #edf6f3;
         border-color: #b8d4cb;
+      }
+
+      .page-nav a.active {
+        background: #dff0ea;
+        border-color: #9ac7ba;
+        color: #1e5d51;
       }
 
       section {
@@ -3633,6 +3651,12 @@ function renderHomePage() {
           background: #202b36;
         }
 
+        .page-nav a.active {
+          background: #17352e;
+          border-color: #3a7b6d;
+          color: #91e3cc;
+        }
+
         th,
         td {
           border-bottom-color: #2b3642;
@@ -3684,8 +3708,8 @@ function renderHomePage() {
     <main>
       <header>
         <div>
-          <h1>Kids Tunes</h1>
-          <p>Recent scans and known card assignments.</p>
+          <h1>${escapeHtml(pageTitle)}</h1>
+          <p>${escapeHtml(pageDescription)}</p>
         </div>
         <div class="stats">
           <div class="status">
@@ -3715,83 +3739,9 @@ function renderHomePage() {
         </div>
       </header>
 
-      <nav class="page-nav" aria-label="Page sections">
-        <a href="#media">Media</a>
-        <a href="#cards">Cards</a>
-        <a href="#activity">Activity</a>
-        <a href="#devices">Devices</a>
-        <a href="#reader">Reader</a>
-      </nav>
+      <nav class="page-nav" aria-label="Main pages">${nav}</nav>
 
-      <section id="media" aria-label="Media library">
-        <div class="section-heading">
-          <h2>Media library</h2>
-        </div>
-        ${renderMediaLibrary(mediaItems)}
-      </section>
-
-      <section id="cards" aria-label="Known cards">
-        <div class="section-heading">
-          <h2>Known cards</h2>
-        </div>
-        ${renderKnownCards(cards, sonosDevices, receivers)}
-      </section>
-
-      <section id="activity" aria-label="Recent scans">
-        <div class="section-heading">
-          <h2>Recent scans</h2>
-        </div>
-        ${table}
-      </section>
-
-      <section aria-label="Action events">
-        <div class="section-heading">
-          <h2>Action events</h2>
-        </div>
-        ${renderActionEvents(actionEvents)}
-      </section>
-
-      <section id="devices" aria-label="Receivers">
-        <div class="section-heading">
-          <h2>Receivers</h2>
-        </div>
-        <div class="settings-panel">
-          ${renderReceivers(receivers, sonosDevices)}
-        </div>
-      </section>
-
-      <section aria-label="Sonos settings">
-        <div class="section-heading">
-          <h2>Sonos devices</h2>
-        </div>
-        <div class="settings-panel">
-          ${renderSonosSettings(sonosSettings, sonosDevices)}
-        </div>
-      </section>
-
-      <section aria-label="Spotify settings">
-        <div class="section-heading">
-          <h2>Spotify</h2>
-        </div>
-        <div class="settings-panel">
-          ${renderSpotifySettings(spotifyStatus)}
-        </div>
-      </section>
-
-      <section id="reader" aria-label="ESPHome reader bridge">
-        <div class="section-heading">
-          <h2>ESPHome reader bridge</h2>
-        </div>
-        <div class="settings-panel">
-          ${renderEspHomeBridge(espHomeSettings, espHomeStatus)}
-        </div>
-        <div class="section-heading">
-          <h2>Reader test action</h2>
-        </div>
-        <div class="settings-panel">
-          ${renderReaderTestAction(readerTestActionSettings, sonosDevices)}
-        </div>
-      </section>
+      ${content}
     </main>
     <script>
       (() => {
@@ -3833,6 +3783,134 @@ function renderHomePage() {
 </html>`;
 }
 
+function renderMediaPage() {
+  return renderPageShell(
+    "/media",
+    "Media",
+    "Tracks, episodes, artwork, card assignment status, and print status.",
+    `
+      <section aria-label="Media library">
+        <div class="section-heading">
+          <h2>Media library</h2>
+        </div>
+        ${renderMediaLibrary(getMediaItems(100))}
+      </section>
+    `,
+  );
+}
+
+function renderCardsPage() {
+  const sonosDevices = getSonosDevices();
+  const receivers = getReceivers();
+
+  return renderPageShell(
+    "/cards",
+    "Cards",
+    "Manage known tags, actions, and test scans.",
+    `
+      <section aria-label="Known cards">
+        <div class="section-heading">
+          <h2>Known cards</h2>
+        </div>
+        ${renderKnownCards(getCards(100), sonosDevices, receivers)}
+      </section>
+    `,
+  );
+}
+
+function renderActivityPage() {
+  return renderPageShell(
+    "/activity",
+    "Activity",
+    "Recent scans and action events.",
+    `
+      <section aria-label="Recent scans">
+        <div class="section-heading">
+          <h2>Recent scans</h2>
+        </div>
+        ${renderRecentScans(getRecentScans(50))}
+      </section>
+
+      <section aria-label="Action events">
+        <div class="section-heading">
+          <h2>Action events</h2>
+        </div>
+        ${renderActionEvents(getActionEvents(20))}
+      </section>
+    `,
+  );
+}
+
+function renderDevicesPage() {
+  const sonosSettings = getSonosSettings();
+  const sonosDevices = getSonosDevices();
+  const receivers = getReceivers();
+  const spotifyStatus = getSpotifyStatus();
+
+  return renderPageShell(
+    "/devices",
+    "Devices",
+    "Receivers, speakers, and Spotify playback target settings.",
+    `
+      <section aria-label="Receivers">
+        <div class="section-heading">
+          <h2>Receivers</h2>
+        </div>
+        <div class="settings-panel">
+          ${renderReceivers(receivers, sonosDevices)}
+        </div>
+      </section>
+
+      <section aria-label="Sonos settings">
+        <div class="section-heading">
+          <h2>Sonos devices</h2>
+        </div>
+        <div class="settings-panel">
+          ${renderSonosSettings(sonosSettings, sonosDevices)}
+        </div>
+      </section>
+
+      <section aria-label="Spotify settings">
+        <div class="section-heading">
+          <h2>Spotify</h2>
+        </div>
+        <div class="settings-panel">
+          ${renderSpotifySettings(spotifyStatus)}
+        </div>
+      </section>
+    `,
+  );
+}
+
+function renderReaderPage() {
+  const espHomeSettings = getEspHomeSettings();
+  const espHomeStatus = getEspHomeBridgeStatus();
+  const readerTestActionSettings = getReaderTestActionSettings();
+  const sonosDevices = getSonosDevices();
+
+  return renderPageShell(
+    "/reader",
+    "Reader",
+    "ESPHome bridge status and reader test action.",
+    `
+      <section aria-label="ESPHome reader bridge">
+        <div class="section-heading">
+          <h2>ESPHome reader bridge</h2>
+        </div>
+        <div class="settings-panel">
+          ${renderEspHomeBridge(espHomeSettings, espHomeStatus)}
+        </div>
+        <div class="section-heading">
+          <h2>Reader test action</h2>
+        </div>
+        <div class="settings-panel">
+          ${renderReaderTestAction(readerTestActionSettings, sonosDevices)}
+        </div>
+      </section>
+    `,
+  );
+}
+
 async function handleRequest(request, response) {
   const url = new URL(request.url, `http://${request.headers.host || `${HOST}:${PORT}`}`);
 
@@ -3852,7 +3930,32 @@ async function handleRequest(request, response) {
   }
 
   if (request.method === "GET" && url.pathname === "/") {
-    sendHtml(response, renderHomePage());
+    redirect(response, "/media");
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/media") {
+    sendHtml(response, renderMediaPage());
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/cards") {
+    sendHtml(response, renderCardsPage());
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/activity") {
+    sendHtml(response, renderActivityPage());
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/devices") {
+    sendHtml(response, renderDevicesPage());
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/reader") {
+    sendHtml(response, renderReaderPage());
     return;
   }
 

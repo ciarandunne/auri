@@ -182,9 +182,14 @@ The home page also has a first-pass Media library section showing title, Spotify
 
 The first UI cleanup pass has started:
 
-- Day-to-day sections now appear first: Media, Cards, Activity.
-- Setup sections now come later: Receivers, Sonos, Spotify, Reader.
-- A top navigation bar links to the main sections.
+- The UI is now split into separate pages instead of one long page:
+  - `/media`
+  - `/cards`
+  - `/activity`
+  - `/devices`
+  - `/reader`
+- `/` redirects to `/media`.
+- A top navigation bar links between the pages and marks the active page.
 - Media, card, scan, and action-event tables have simple client-side search filters.
 - The Media library can show local Spotify artwork thumbnails through `/assets/spotify-artwork/...`.
 
@@ -225,8 +230,8 @@ curl.exe -s http://127.0.0.1:8787/api/spotify/devices
    - Manage assigned tracks/tags in a dedicated list.
    - Add and manage devices, including receivers, speakers, and Spotify targets.
    - Provide a filterable/searchable activity log.
-   - Separate setup/configuration from day-to-day card management.
-   - Make the main page easier to scan as the project grows.
+   - Keep setup/configuration separate from day-to-day card management.
+   - Continue refining each page now that the one-long-page structure has been split up.
 6. Add a Spotify/Echo volume panel showing the current reported Echo volume and easier volume controls:
    - Set the starting playback volume.
    - Set a maximum allowed volume level.
@@ -274,10 +279,14 @@ curl.exe -s http://127.0.0.1:8787/api/spotify/devices
    - Use collections for browsing, filtering, printable labels, and playlist/card assignment.
 14. Make the app automatically recover when a saved Spotify device ID changes by matching the Echo Dot by name.
 15. Add a Windows auto-start option so the app does not depend on manually running `npm.cmd start`.
-16. Later, move toward Synology Docker deployment for always-on home use.
-17. Test M5Dial RFID receiver firmware, starting with ESPHome and falling back to Arduino/PlatformIO if needed.
-18. Later, add a second receiver profile for Liam while keeping one shared card catalog.
-19. Later, support receiver-specific Spotify accounts and speakers while preserving the same card-to-content mapping.
+16. Add an admin restart/control option once the app has a proper runner:
+   - Prefer a process manager, Windows service/task, or Docker restart policy.
+   - Then the web UI can safely offer "Restart app" without losing the process.
+   - Avoid a fragile self-restart button while the app is only launched manually with `npm.cmd start`.
+17. Later, move toward Synology Docker deployment for always-on home use.
+18. Test M5Dial RFID receiver firmware, starting with ESPHome and falling back to Arduino/PlatformIO if needed.
+19. Later, add a second receiver profile for Liam while keeping one shared card catalog.
+20. Later, support receiver-specific Spotify accounts and speakers while preserving the same card-to-content mapping.
 
 ## Deployment Direction
 

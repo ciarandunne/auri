@@ -48,7 +48,7 @@ Spotify credentials are set as PowerShell environment variables before starting 
 
 ## Immediate Next Action
 
-Restart the app so the latest Spotify reliability patch takes effect.
+Restart the app so the latest UI and Spotify playlist-import changes take effect.
 
 In the PowerShell window that is currently running Kids Tunes:
 
@@ -57,15 +57,41 @@ Ctrl+C
 npm.cmd start
 ```
 
-Then test one card with a single tap.
+Then reconnect Spotify from the app so the token includes the new `playlist-read-private` scope:
+
+1. Open `http://127.0.0.1:8787/media`.
+2. Use the Spotify connect/login link shown in the import panel or Spotify settings.
+3. Complete the Spotify authorization flow.
+4. Return to `/media`.
+5. Paste a Spotify playlist URL into the "Import Spotify playlist" form.
+6. Click "Import Playlist".
+7. Confirm the Media table fills with playlist tracks/episodes.
+8. Check that imported rows show:
+   - title
+   - artist/show
+   - Spotify URI
+   - assignment status
+   - print status
+   - imported playlist source
+
+If import fails with a scope/auth error, reconnect Spotify again after confirming the app was restarted with the latest code.
+
+After playlist import works, test one existing physical card with a single tap.
 
 Important: do not immediately tap the same card twice unless testing stop/pause, because the second tap of the same active card is intentionally treated as pause.
 
 The intended stop behavior is: tap the active card a second time. We do not currently plan to add a separate stop card.
 
-## Latest Code Change Not Yet Restarted
+## Latest Code Changes Not Yet Restarted
 
-`server.js` has been patched so Spotify play commands are now verified:
+`server.js` has recent changes that require an app restart:
+
+- Multi-page UI refinements.
+- Spotify playlist import foundation on `/media`.
+- New Spotify OAuth scope: `playlist-read-private`.
+- Spotify play command verification/retry behavior.
+
+Spotify play commands are now verified:
 
 - Transfer playback to the configured Echo Dot.
 - Wait briefly.
@@ -76,6 +102,14 @@ The intended stop behavior is: tap the active card a second time. We do not curr
 - Log a failure if Spotify still reports paused/no active playback.
 
 Before this patch, Spotify could return success while the Echo Dot ended up paused or inactive.
+
+Playlist import now:
+
+- accepts a Spotify playlist URL on `/media`;
+- imports tracks/episodes into `media_items`;
+- stores playlist source fields;
+- avoids duplicates by Spotify URI;
+- exposes `POST /api/spotify/import-playlist`.
 
 ## Current Playback Target
 
@@ -222,6 +256,37 @@ Example payload:
 Important: Spotify auth now requests `playlist-read-private`. After restarting with this code, reconnect Spotify once from the app so the token has the new playlist scope.
 
 Next playlist step: add a "assign next scanned card to this media item" workflow from `/media`, so a playlist item can become a physical card without manually copying URLs.
+
+## Best Next Build Choices
+
+After the restart/reconnect/import test above, the best next implementation choices are:
+
+1. Playlist-to-card assignment flow:
+   - Add an "Assign next scanned card" button beside each unassigned media item on `/media`.
+   - Store a pending assignment in app settings, including media item ID and timestamp.
+   - When the next unknown card is scanned, create/update the card, set its action to `spotify_play`, and link it in `card_media_assignments`.
+   - Clear the pending assignment after success or after a timeout.
+   - Show a clear pending state in the UI so it is obvious what the next scanned card will do.
+
+2. Playlist artwork caching:
+   - Download imported Spotify artwork into `data/spotify-artwork/`.
+   - Fill `media_items.local_artwork_path`.
+   - Reuse cached artwork for the media table and printable sheets.
+   - Keep filenames stable and readable, based on Spotify title plus type/ID.
+
+3. Printable label queue:
+   - Add print statuses: `not_printed`, `queued`, `pdf_generated`, `printed`.
+   - Add buttons to queue selected media items for print.
+   - Generate a PDF sheet from queued artwork with whitespace between labels for cutting.
+   - Keep artwork uncropped and unstretched.
+
+4. Parent control page:
+   - Add a simple mobile-friendly page for parents.
+   - Show assigned media as large tap targets.
+   - Allow play/pause and volume control from a phone.
+   - Keep admin setup pages separate.
+
+Recommended next build: do item 1 first. It makes the playlist import immediately useful with the physical cards.
 
 ## Useful Checks
 

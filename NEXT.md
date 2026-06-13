@@ -35,6 +35,15 @@ Current first forward-looking pack:
 feature-packs/printable-label-queue/
 ```
 
+Additional forward-looking packs prepared for later:
+
+```text
+feature-packs/volume-limits/
+feature-packs/playback-history/
+feature-packs/parent-mobile-control/
+feature-packs/m5dial-receiver/
+```
+
 Current retrospective validation packs:
 
 ```text

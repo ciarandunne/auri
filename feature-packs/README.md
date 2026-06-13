@@ -50,6 +50,10 @@ Use these where useful:
 Forward packs:
 
 - `printable-label-queue/` - prepare printable artwork label sheets and print status flow.
+- `volume-limits/` - prepare current/start/max volume controls and safety rules.
+- `playback-history/` - prepare durable play/pause/failure history across cards, receivers, and speakers.
+- `parent-mobile-control/` - prepare a phone-friendly parent control surface.
+- `m5dial-receiver/` - prepare the M5Dial receiver firmware/app integration plan.
 
 Retrospective validation packs:
 

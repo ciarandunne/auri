@@ -951,6 +951,16 @@ function getSpotifyTokens() {
   };
 }
 
+function getSpotifyAccountSummary() {
+  return {
+    id: getSetting("spotify_account_id", ""),
+    display_name: getSetting("spotify_account_display_name", ""),
+    uri: getSetting("spotify_account_uri", ""),
+    profile_url: getSetting("spotify_account_profile_url", ""),
+    refreshed_at: getSetting("spotify_account_refreshed_at", ""),
+  };
+}
+
 function getSpotifyStatus() {
   const config = getSpotifyConfig();
   const tokens = getSpotifyTokens();
@@ -964,6 +974,7 @@ function getSpotifyStatus() {
     scopes: SPOTIFY_SCOPES,
     default_device_id: getSetting("spotify_default_device_id", ""),
     start_volume_percent: getSpotifyStartVolumePercent(),
+    account: getSpotifyAccountSummary(),
   };
 }
 
@@ -1025,6 +1036,20 @@ function saveSpotifyTokenResponse(tokenResponse) {
   }
 
   return getSpotifyStatus();
+}
+
+function saveSpotifyAccountProfile(profile) {
+  setSetting("spotify_account_id", profile.id || "");
+  setSetting("spotify_account_display_name", profile.display_name || profile.id || "");
+  setSetting("spotify_account_uri", profile.uri || "");
+  setSetting("spotify_account_profile_url", profile.external_urls?.spotify || "");
+  setSetting("spotify_account_refreshed_at", new Date().toISOString());
+  return getSpotifyAccountSummary();
+}
+
+async function refreshSpotifyAccountProfile() {
+  const profile = await spotifyApiRequest("/me");
+  return saveSpotifyAccountProfile(profile);
 }
 
 function normalizeSpotifyUri(value) {
@@ -1493,7 +1518,9 @@ async function exchangeSpotifyCode(code) {
     throw new Error(`Spotify token exchange failed with HTTP ${response.status}: ${JSON.stringify(payload).slice(0, 240)}`);
   }
 
-  return saveSpotifyTokenResponse(payload);
+  const status = saveSpotifyTokenResponse(payload);
+  await refreshSpotifyAccountProfile();
+  return status;
 }
 
 async function refreshSpotifyAccessToken() {
@@ -3205,11 +3232,17 @@ function renderSpotifyPlaylistImport(status) {
   const lastImport = getLastSpotifyPlaylistImport();
   const lastPlaylistName = lastImport && lastImport.playlist && lastImport.playlist.name ? lastImport.playlist.name : "Spotify playlist";
   const lastArtworkCache = getLastArtworkCacheResult();
+  const accountLabel = status.account.display_name || status.account.id || "";
+  const refreshAccountForm = status.authorized
+    ? `<form class="inline-form" method="post" action="/spotify/refresh-account"><button type="submit">Refresh Account</button></form>`
+    : "";
 
   return `
     <div class="import-panel">
       <div class="bridge-status">
         <span>Spotify import: <span class="sonos-mode ${modeClass}">${escapeHtml(modeText)}</span></span>
+        <span>Connected account: ${accountLabel ? `<code>${escapeHtml(accountLabel)}</code>` : `<span class="muted">unknown</span>`}</span>
+        ${refreshAccountForm}
         <span>Required scope: <code>playlist-read-private</code></span>
         ${
           lastImport
@@ -3581,10 +3614,16 @@ function renderSpotifySettings(status) {
   const modeText = !status.configured ? "Needs app credentials" : status.authorized ? "Authorized" : "Needs login";
   const loginLink = status.configured ? `<a class="button-link" href="/spotify/login">Connect Spotify</a>` : "";
   const startVolumeValue = status.start_volume_percent === "" ? "" : String(status.start_volume_percent);
+  const accountLabel = status.account.display_name || status.account.id || "";
+  const refreshAccountForm = status.authorized
+    ? `<form class="inline-form" method="post" action="/spotify/refresh-account"><button type="submit">Refresh Account</button></form>`
+    : "";
 
   return `
     <div class="bridge-status">
       <span>Spotify: <span class="sonos-mode ${modeClass}">${escapeHtml(modeText)}</span></span>
+      <span>Connected account: ${accountLabel ? `<code>${escapeHtml(accountLabel)}</code>` : `<span class="muted">unknown</span>`}</span>
+      ${refreshAccountForm}
       <span>Start volume: <code>${startVolumeValue ? `${escapeHtml(startVolumeValue)}%` : "unchanged"}</code></span>
       <span>Redirect URI: <code>${escapeHtml(status.redirect_uri)}</code></span>
       <span>Scopes: <code>${escapeHtml(status.scopes.join(" "))}</code></span>
@@ -5014,6 +5053,19 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/spotify/refresh-account") {
+    try {
+      sendJson(response, 200, {
+        ok: true,
+        account: await refreshSpotifyAccountProfile(),
+        spotify: getSpotifyStatus(),
+      });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message, spotify: getSpotifyStatus() });
+    }
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/api/settings/spotify-playback") {
     try {
       const payload = await readPayload(request);
@@ -5464,6 +5516,16 @@ async function handleRequest(request, response) {
       redirect(response, "/");
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/spotify/refresh-account") {
+    try {
+      await refreshSpotifyAccountProfile();
+      redirect(response, "/media");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message, spotify: getSpotifyStatus() });
     }
     return;
   }

@@ -54,6 +54,7 @@ Forward packs:
 - `playback-history/` - prepare durable play/pause/failure history across cards, receivers, and speakers.
 - `parent-mobile-control/` - prepare a phone-friendly parent control surface.
 - `m5dial-receiver/` - prepare the M5Dial receiver firmware/app integration plan.
+- `spotify-multi-account/` - prepare parent playlist import plus child-specific playback accounts.
 
 Retrospective validation packs:
 

@@ -42,6 +42,7 @@ feature-packs/volume-limits/
 feature-packs/playback-history/
 feature-packs/parent-mobile-control/
 feature-packs/m5dial-receiver/
+feature-packs/spotify-multi-account/
 ```
 
 Current retrospective validation packs:

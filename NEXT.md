@@ -180,6 +180,14 @@ GET /api/media
 
 The home page also has a first-pass Media library section showing title, Spotify type, URI/artwork path, assignment status, and print status.
 
+The first UI cleanup pass has started:
+
+- Day-to-day sections now appear first: Media, Cards, Activity.
+- Setup sections now come later: Receivers, Sonos, Spotify, Reader.
+- A top navigation bar links to the main sections.
+- Media, card, scan, and action-event tables have simple client-side search filters.
+- The Media library can show local Spotify artwork thumbnails through `/assets/spotify-artwork/...`.
+
 ## Useful Checks
 
 Check app health:
@@ -212,7 +220,7 @@ curl.exe -s http://127.0.0.1:8787/api/spotify/devices
 2. Create an initial Git checkpoint/commit so the current working code is preserved before larger changes.
 3. Add clearer UI feedback for the last card action, especially play vs pause vs failed.
 4. Add a visible "play/pause toggle" explanation or status indicator so second-tap pause is obvious.
-5. Reorganize the UI into clearer task-focused areas:
+5. Continue reorganizing the UI into clearer task-focused areas:
    - Assign cards/tags to Spotify tracks, episodes, or local media.
    - Manage assigned tracks/tags in a dedicated list.
    - Add and manage devices, including receivers, speakers, and Spotify targets.

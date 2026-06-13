@@ -437,6 +437,21 @@ function sendHtml(response, html) {
   response.end(html);
 }
 
+function sendFile(response, filePath, contentType) {
+  fs.readFile(filePath, (error, content) => {
+    if (error) {
+      sendJson(response, 404, { ok: false, error: "File not found" });
+      return;
+    }
+
+    response.writeHead(200, {
+      "content-type": contentType,
+      "cache-control": "public, max-age=300",
+    });
+    response.end(content);
+  });
+}
+
 function redirect(response, location) {
   response.writeHead(303, {
     location,
@@ -456,6 +471,42 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function contentTypeForPath(filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+
+  if (extension === ".png") {
+    return "image/png";
+  }
+
+  if (extension === ".webp") {
+    return "image/webp";
+  }
+
+  if (extension === ".jpg" || extension === ".jpeg") {
+    return "image/jpeg";
+  }
+
+  if (extension === ".pdf") {
+    return "application/pdf";
+  }
+
+  if (extension === ".html") {
+    return "text/html; charset=utf-8";
+  }
+
+  return "application/octet-stream";
+}
+
+function localArtworkUrl(localArtworkPath) {
+  const normalized = String(localArtworkPath || "").replaceAll("\\", "/");
+
+  if (!normalized.startsWith("data/spotify-artwork/")) {
+    return "";
+  }
+
+  return `/assets/spotify-artwork/${encodeURIComponent(path.basename(normalized))}`;
 }
 
 function formatScanTime(value) {
@@ -2390,8 +2441,18 @@ function renderKnownCards(cards, sonosDevices, receivers) {
 
   const rows = cards
     .map(
-      (card) => `
-        <tr>
+      (card) => {
+        const searchText = [
+          card.name,
+          card.tag_id,
+          card.notes,
+          card.action.type,
+          card.action.target,
+          card.action.enabled ? "enabled" : "disabled",
+        ].join(" ");
+
+        return `
+        <tr data-filter-row data-search="${escapeHtml(searchText.toLowerCase())}">
           <td>
             <strong>${escapeHtml(card.name)}</strong>
             <span class="small-text"><code>${escapeHtml(card.tag_id)}</code></span>
@@ -2406,13 +2467,20 @@ function renderKnownCards(cards, sonosDevices, receivers) {
             </form>
           </td>
         </tr>
-      `,
+      `;
+      },
     )
     .join("");
 
   return `
+    <div class="section-tools">
+      <label>
+        <span>Search cards</span>
+        <input type="search" placeholder="Card, tag, action" data-filter-input="cards-table">
+      </label>
+    </div>
     <div class="table-wrap">
-      <table class="cards-table">
+      <table class="cards-table" id="cards-table">
         <thead>
           <tr>
             <th>Card</th>
@@ -2434,11 +2502,33 @@ function renderMediaLibrary(mediaItems) {
 
   const rows = mediaItems
     .map(
-      (item) => `
-        <tr>
+      (item) => {
+        const artworkUrl = localArtworkUrl(item.local_artwork_path);
+        const searchText = [
+          item.title,
+          item.subtitle,
+          item.provider,
+          item.media_type,
+          item.provider_uri,
+          item.assignment_status,
+          item.print_status,
+          item.assigned_card_names.join(" "),
+        ].join(" ");
+
+        return `
+        <tr data-filter-row data-search="${escapeHtml(searchText.toLowerCase())}">
           <td>
-            <strong>${escapeHtml(item.title)}</strong>
-            <span class="small-text">${escapeHtml(item.subtitle) || `<span class="muted">No subtitle</span>`}</span>
+            <div class="media-cell">
+              ${
+                artworkUrl
+                  ? `<img class="media-artwork" src="${escapeHtml(artworkUrl)}" alt="">`
+                  : `<div class="media-artwork placeholder"></div>`
+              }
+              <div>
+                <strong>${escapeHtml(item.title)}</strong>
+                <span class="small-text">${escapeHtml(item.subtitle) || `<span class="muted">No subtitle</span>`}</span>
+              </div>
+            </div>
           </td>
           <td>
             <span class="pill known">${escapeHtml(item.provider)}</span>
@@ -2456,13 +2546,20 @@ function renderMediaLibrary(mediaItems) {
             <span class="action-status">${escapeHtml(item.print_status)}</span>
           </td>
         </tr>
-      `,
+      `;
+      },
     )
     .join("");
 
   return `
+    <div class="section-tools">
+      <label>
+        <span>Search media</span>
+        <input type="search" placeholder="Title, show, card, status" data-filter-input="media-table">
+      </label>
+    </div>
     <div class="table-wrap">
-      <table class="media-table">
+      <table class="media-table" id="media-table">
         <thead>
           <tr>
             <th>Media</th>
@@ -2485,8 +2582,18 @@ function renderActionEvents(events) {
 
   const rows = events
     .map(
-      (event) => `
-        <tr>
+      (event) => {
+        const searchText = [
+          formatScanTime(event.created_at),
+          event.tag_id,
+          event.action_type,
+          event.action_target,
+          event.status,
+          event.message,
+        ].join(" ");
+
+        return `
+        <tr data-filter-row data-search="${escapeHtml(searchText.toLowerCase())}">
           <td>${escapeHtml(formatScanTime(event.created_at))}</td>
           <td><code>${escapeHtml(event.tag_id)}</code></td>
           <td>${escapeHtml(event.action_type)}</td>
@@ -2494,13 +2601,20 @@ function renderActionEvents(events) {
           <td><span class="action-status">${escapeHtml(event.status)}</span></td>
           <td>${escapeHtml(event.message) || `<span class="muted">No message</span>`}</td>
         </tr>
-      `,
+      `;
+      },
     )
     .join("");
 
   return `
+    <div class="section-tools">
+      <label>
+        <span>Search log</span>
+        <input type="search" placeholder="Tag, action, status, message" data-filter-input="events-table">
+      </label>
+    </div>
     <div class="table-wrap">
-      <table class="events-table">
+      <table class="events-table" id="events-table">
         <thead>
           <tr>
             <th>Time</th>
@@ -2822,8 +2936,21 @@ function renderHomePage() {
   const actionEventCount = countActionEvents.get().action_event_count;
   const rows = scans
     .map(
-      (scan) => `
-        <tr>
+      (scan) => {
+        const searchText = [
+          scan.id,
+          scan.tag_id,
+          scan.known ? "known" : "unknown",
+          scan.card ? scan.card.name : "unassigned",
+          scan.receiver ? scan.receiver.name : "unknown",
+          scan.reader_id,
+          scan.source,
+          scan.action_event ? scan.action_event.status : "",
+          scan.action_event ? scan.action_event.action_type : "",
+        ].join(" ");
+
+        return `
+        <tr data-filter-row data-search="${escapeHtml(searchText.toLowerCase())}">
           <td>${escapeHtml(scan.id)}</td>
           <td>
             <code>${escapeHtml(scan.tag_id)}</code>
@@ -2841,14 +2968,21 @@ function renderHomePage() {
           <td class="time-cell" title="${escapeHtml(scan.scanned_at)}">${escapeHtml(formatScanTime(scan.scanned_at))}</td>
           <td class="assign-cell">${renderCardForm(scan)}</td>
         </tr>
-      `,
+      `;
+      },
     )
     .join("");
 
   const table = scans.length
     ? `
+      <div class="section-tools">
+        <label>
+          <span>Search scans</span>
+          <input type="search" placeholder="Tag, card, reader, action" data-filter-input="scans-table">
+        </label>
+      </div>
       <div class="table-wrap">
-        <table class="scans-table">
+        <table class="scans-table" id="scans-table">
           <thead>
             <tr>
               <th>ID</th>
@@ -2922,6 +3056,7 @@ function renderHomePage() {
       .stats {
         display: flex;
         gap: 10px;
+        flex-wrap: wrap;
       }
 
       .status {
@@ -2942,6 +3077,38 @@ function renderHomePage() {
         display: block;
         margin-top: 2px;
         font-size: 1.45rem;
+      }
+
+      .page-nav {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 18px;
+        padding: 10px;
+        border: 1px solid rgba(31, 41, 51, 0.12);
+        border-radius: 8px;
+        background: rgba(245, 241, 232, 0.88);
+        backdrop-filter: blur(10px);
+      }
+
+      .page-nav a {
+        display: inline-flex;
+        align-items: center;
+        min-height: 34px;
+        border-radius: 6px;
+        padding: 0 12px;
+        background: rgba(255, 255, 255, 0.72);
+        color: inherit;
+        font-size: 0.9rem;
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      .page-nav a:hover {
+        background: rgba(47, 125, 109, 0.14);
       }
 
       section {
@@ -2970,6 +3137,22 @@ function renderHomePage() {
 
       .table-wrap {
         overflow-x: auto;
+      }
+
+      .section-tools {
+        display: flex;
+        gap: 10px;
+        padding: 12px 16px;
+        border-bottom: 1px solid rgba(31, 41, 51, 0.08);
+        background: rgba(255, 255, 255, 0.32);
+      }
+
+      .section-tools label {
+        width: min(420px, 100%);
+      }
+
+      tr.filtered-out {
+        display: none;
       }
 
       table {
@@ -3034,6 +3217,25 @@ function renderHomePage() {
       .scans-table th:nth-child(6),
       .scans-table td:nth-child(6) {
         width: 135px;
+      }
+
+      .media-cell {
+        display: grid;
+        grid-template-columns: 58px minmax(0, 1fr);
+        gap: 12px;
+        align-items: center;
+      }
+
+      .media-artwork {
+        width: 58px;
+        height: 58px;
+        border-radius: 6px;
+        object-fit: contain;
+        background: rgba(31, 41, 51, 0.06);
+      }
+
+      .media-artwork.placeholder {
+        border: 1px dashed rgba(31, 41, 51, 0.2);
       }
 
       code {
@@ -3352,6 +3554,12 @@ function renderHomePage() {
         text-align: center;
       }
 
+      .filter-empty-row td {
+        padding: 24px 16px;
+        color: #56616b;
+        text-align: center;
+      }
+
       @media (max-width: 760px) {
         header {
           display: block;
@@ -3359,6 +3567,11 @@ function renderHomePage() {
 
         .stats {
           margin-top: 18px;
+        }
+
+        .status {
+          min-width: 0;
+          flex: 1 1 130px;
         }
 
         .sonos-toggle-form,
@@ -3408,9 +3621,15 @@ function renderHomePage() {
         }
 
         section,
-        .status {
+        .status,
+        .page-nav,
+        .section-tools {
           background: rgba(25, 34, 42, 0.82);
           border-color: rgba(255, 255, 255, 0.12);
+        }
+
+        .page-nav a {
+          background: rgba(255, 255, 255, 0.08);
         }
 
         th,
@@ -3490,21 +3709,57 @@ function renderHomePage() {
         </div>
       </header>
 
+      <nav class="page-nav" aria-label="Page sections">
+        <a href="#media">Media</a>
+        <a href="#cards">Cards</a>
+        <a href="#activity">Activity</a>
+        <a href="#devices">Devices</a>
+        <a href="#reader">Reader</a>
+      </nav>
+
+      <section id="media" aria-label="Media library">
+        <div class="section-heading">
+          <h2>Media library</h2>
+        </div>
+        ${renderMediaLibrary(mediaItems)}
+      </section>
+
+      <section id="cards" aria-label="Known cards">
+        <div class="section-heading">
+          <h2>Known cards</h2>
+        </div>
+        ${renderKnownCards(cards, sonosDevices, receivers)}
+      </section>
+
+      <section id="activity" aria-label="Recent scans">
+        <div class="section-heading">
+          <h2>Recent scans</h2>
+        </div>
+        ${table}
+      </section>
+
+      <section aria-label="Action events">
+        <div class="section-heading">
+          <h2>Action events</h2>
+        </div>
+        ${renderActionEvents(actionEvents)}
+      </section>
+
+      <section id="devices" aria-label="Receivers">
+        <div class="section-heading">
+          <h2>Receivers</h2>
+        </div>
+        <div class="settings-panel">
+          ${renderReceivers(receivers, sonosDevices)}
+        </div>
+      </section>
+
       <section aria-label="Sonos settings">
         <div class="section-heading">
           <h2>Sonos devices</h2>
         </div>
         <div class="settings-panel">
           ${renderSonosSettings(sonosSettings, sonosDevices)}
-        </div>
-      </section>
-
-      <section aria-label="Receivers">
-        <div class="section-heading">
-          <h2>Receivers</h2>
-        </div>
-        <div class="settings-panel">
-          ${renderReceivers(receivers, sonosDevices)}
         </div>
       </section>
 
@@ -3517,7 +3772,7 @@ function renderHomePage() {
         </div>
       </section>
 
-      <section aria-label="ESPHome reader bridge">
+      <section id="reader" aria-label="ESPHome reader bridge">
         <div class="section-heading">
           <h2>ESPHome reader bridge</h2>
         </div>
@@ -3531,41 +3786,64 @@ function renderHomePage() {
           ${renderReaderTestAction(readerTestActionSettings, sonosDevices)}
         </div>
       </section>
-
-      <section aria-label="Recent scans">
-        <div class="section-heading">
-          <h2>Recent scans</h2>
-        </div>
-        ${table}
-      </section>
-
-      <section aria-label="Media library">
-        <div class="section-heading">
-          <h2>Media library</h2>
-        </div>
-        ${renderMediaLibrary(mediaItems)}
-      </section>
-
-      <section aria-label="Known cards">
-        <div class="section-heading">
-          <h2>Known cards</h2>
-        </div>
-        ${renderKnownCards(cards, sonosDevices, receivers)}
-      </section>
-
-      <section aria-label="Action events">
-        <div class="section-heading">
-          <h2>Action events</h2>
-        </div>
-        ${renderActionEvents(actionEvents)}
-      </section>
     </main>
+    <script>
+      (() => {
+        const inputs = document.querySelectorAll("[data-filter-input]");
+
+        inputs.forEach((input) => {
+          const table = document.getElementById(input.dataset.filterInput || "");
+
+          if (!table) {
+            return;
+          }
+
+          const rows = Array.from(table.querySelectorAll("[data-filter-row]"));
+          const columnCount = table.querySelectorAll("thead th").length || 1;
+          const emptyRow = document.createElement("tr");
+          emptyRow.className = "filter-empty-row filtered-out";
+          emptyRow.innerHTML = "<td colspan=\"" + columnCount + "\">No matching rows</td>";
+          table.querySelector("tbody").append(emptyRow);
+
+          input.addEventListener("input", () => {
+            const query = input.value.trim().toLowerCase();
+            let visibleCount = 0;
+
+            rows.forEach((row) => {
+              const isVisible = !query || row.dataset.search.includes(query);
+              row.classList.toggle("filtered-out", !isVisible);
+
+              if (isVisible) {
+                visibleCount += 1;
+              }
+            });
+
+            emptyRow.classList.toggle("filtered-out", visibleCount > 0);
+          });
+        });
+      })();
+    </script>
   </body>
 </html>`;
 }
 
 async function handleRequest(request, response) {
   const url = new URL(request.url, `http://${request.headers.host || `${HOST}:${PORT}`}`);
+
+  if (request.method === "GET" && url.pathname.startsWith("/assets/spotify-artwork/")) {
+    const fileName = path.basename(decodeURIComponent(url.pathname.slice("/assets/spotify-artwork/".length)));
+    const filePath = path.join(__dirname, "data", "spotify-artwork", fileName);
+    const resolvedDir = path.resolve(__dirname, "data", "spotify-artwork");
+    const resolvedFile = path.resolve(filePath);
+
+    if (!resolvedFile.startsWith(resolvedDir + path.sep)) {
+      notFound(response);
+      return;
+    }
+
+    sendFile(response, resolvedFile, contentTypeForPath(resolvedFile));
+    return;
+  }
 
   if (request.method === "GET" && url.pathname === "/") {
     sendHtml(response, renderHomePage());

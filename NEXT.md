@@ -22,6 +22,7 @@ The current prototype can:
 
 - Receive ESPHome tag scans from the Adonno-style PN532 reader.
 - Store scans/cards/actions in SQLite.
+- Maintain a first-pass media library table synced from existing Spotify card actions.
 - Assign physical cards to Spotify episode URLs.
 - Play Spotify content on the configured Echo Dot.
 - Start Spotify tracks/episodes from the beginning.
@@ -164,6 +165,21 @@ node scripts/create-label-test-sheet.mjs
 
 The test sheet uses three uncropped Spotify artwork images at 48 mm square, with whitespace between labels for scissor cutting.
 
+The media library foundation has started. Existing Spotify card actions are synced into:
+
+```text
+media_items
+card_media_assignments
+```
+
+The read-only API endpoint is:
+
+```text
+GET /api/media
+```
+
+The home page also has a first-pass Media library section showing title, Spotify type, URI/artwork path, assignment status, and print status.
+
 ## Useful Checks
 
 Check app health:
@@ -215,9 +231,9 @@ curl.exe -s http://127.0.0.1:8787/api/spotify/devices
    - Pause/stop current playback.
    - Show current/last playing item.
    - Keep admin setup separate from simple parent controls.
-9. Explore a Spotify playlist-to-card assignment flow:
+9. Expand the media library into a full Spotify playlist-to-card assignment flow:
    - Pick a Spotify playlist in the app.
-   - Import playlist items into a proper `media_items` table.
+   - Import playlist items into the `media_items` table.
    - Store Spotify URL/URI, title, artist/show, album, duration, artwork URL, and local artwork path.
    - Show tracks/episodes from that playlist with metadata.
    - Show assignment status for each item, such as unassigned, assigned, or retired.

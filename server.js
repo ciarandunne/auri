@@ -71,6 +71,42 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_card_actions_tag_id
   ON card_actions(tag_id);
 
+  CREATE TABLE IF NOT EXISTS media_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    provider_uri TEXT NOT NULL UNIQUE,
+    source_url TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    subtitle TEXT NOT NULL DEFAULT '',
+    artist_names TEXT NOT NULL DEFAULT '',
+    show_name TEXT NOT NULL DEFAULT '',
+    album_name TEXT NOT NULL DEFAULT '',
+    artwork_url TEXT NOT NULL DEFAULT '',
+    local_artwork_path TEXT NOT NULL DEFAULT '',
+    duration_ms INTEGER,
+    print_status TEXT NOT NULL DEFAULT 'not_printed',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_media_items_provider_uri
+  ON media_items(provider_uri);
+
+  CREATE TABLE IF NOT EXISTS card_media_assignments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tag_id TEXT NOT NULL UNIQUE,
+    media_item_id INTEGER NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (tag_id) REFERENCES cards(tag_id) ON DELETE CASCADE,
+    FOREIGN KEY (media_item_id) REFERENCES media_items(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_card_media_assignments_media_item_id
+  ON card_media_assignments(media_item_id);
+
   CREATE TABLE IF NOT EXISTS action_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     scan_id INTEGER NOT NULL,
@@ -300,10 +336,82 @@ const updateReceiverByIdStatement = db.prepare(`
   WHERE id = ?
 `);
 
+const selectSpotifyActionCards = db.prepare(`
+  SELECT
+    cards.tag_id,
+    cards.name AS card_name,
+    card_actions.action_target,
+    card_actions.enabled
+  FROM card_actions
+  JOIN cards ON cards.tag_id = card_actions.tag_id
+  WHERE card_actions.action_type = 'spotify_play'
+`);
+
+const upsertMediaItemStatement = db.prepare(`
+  INSERT INTO media_items (
+    provider,
+    media_type,
+    provider_uri,
+    source_url,
+    title,
+    subtitle,
+    artist_names,
+    show_name,
+    album_name,
+    artwork_url,
+    local_artwork_path,
+    duration_ms,
+    created_at,
+    updated_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(provider_uri) DO UPDATE SET
+    source_url = excluded.source_url,
+    title = excluded.title,
+    subtitle = excluded.subtitle,
+    artist_names = excluded.artist_names,
+    show_name = excluded.show_name,
+    album_name = excluded.album_name,
+    artwork_url = excluded.artwork_url,
+    local_artwork_path = excluded.local_artwork_path,
+    duration_ms = excluded.duration_ms,
+    updated_at = excluded.updated_at
+`);
+
+const selectMediaItemByProviderUri = db.prepare(`
+  SELECT *
+  FROM media_items
+  WHERE provider_uri = ?
+`);
+
+const upsertCardMediaAssignmentStatement = db.prepare(`
+  INSERT INTO card_media_assignments (tag_id, media_item_id, enabled, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(tag_id) DO UPDATE SET
+    media_item_id = excluded.media_item_id,
+    enabled = excluded.enabled,
+    updated_at = excluded.updated_at
+`);
+
+const selectMediaItems = db.prepare(`
+  SELECT
+    media_items.*,
+    COUNT(card_media_assignments.id) AS assigned_card_count,
+    GROUP_CONCAT(cards.name, ', ') AS assigned_card_names,
+    GROUP_CONCAT(cards.tag_id, ', ') AS assigned_tag_ids
+  FROM media_items
+  LEFT JOIN card_media_assignments ON card_media_assignments.media_item_id = media_items.id
+  LEFT JOIN cards ON cards.tag_id = card_media_assignments.tag_id
+  GROUP BY media_items.id
+  ORDER BY media_items.updated_at DESC, media_items.id DESC
+  LIMIT ?
+`);
+
 const countScans = db.prepare("SELECT COUNT(*) AS scan_count FROM scan_events");
 const countCards = db.prepare("SELECT COUNT(*) AS card_count FROM cards");
 const countActionEvents = db.prepare("SELECT COUNT(*) AS action_event_count FROM action_events");
 const countReceivers = db.prepare("SELECT COUNT(*) AS receiver_count FROM receivers");
+const countMediaItems = db.prepare("SELECT COUNT(*) AS media_item_count FROM media_items");
 
 function getDefaultDatabasePath() {
   if (process.platform === "win32" && process.env.LOCALAPPDATA) {
@@ -854,6 +962,94 @@ function spotifyPlaybackBodyForUri(uri) {
   return null;
 }
 
+function spotifyMediaTypeFromUri(uri) {
+  const parts = String(uri || "").split(":");
+  return parts.length >= 3 ? parts[1] : "";
+}
+
+function getSpotifyArtworkManifestByUri() {
+  const manifestPath = path.join(__dirname, "data", "spotify-artwork", "manifest.json");
+
+  if (!fs.existsSync(manifestPath)) {
+    return new Map();
+  }
+
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    return new Map((manifest.items || []).map((item) => [item.spotify_uri, item]));
+  } catch {
+    return new Map();
+  }
+}
+
+function mediaItemFromSpotifyAction(row, manifestByUri) {
+  const providerUri = normalizeSpotifyUri(row.action_target);
+
+  if (!providerUri) {
+    return null;
+  }
+
+  const manifestItem = manifestByUri.get(providerUri) || {};
+  const mediaType = manifestItem.spotify_type || spotifyMediaTypeFromUri(providerUri) || "unknown";
+
+  return {
+    provider: "spotify",
+    mediaType,
+    providerUri,
+    sourceUrl: manifestItem.spotify_url || row.action_target || "",
+    title: manifestItem.title || row.card_name || providerUri,
+    subtitle: manifestItem.subtitle || manifestItem.artist_names || manifestItem.show_name || manifestItem.album_name || "",
+    artistNames: manifestItem.artist_names || "",
+    showName: manifestItem.show_name || (mediaType === "episode" ? manifestItem.subtitle || "" : ""),
+    albumName: manifestItem.album_name || "",
+    artworkUrl: manifestItem.image_url || "",
+    localArtworkPath: manifestItem.artwork_file || "",
+    durationMs: Number.isInteger(manifestItem.duration_ms) ? manifestItem.duration_ms : null,
+    enabled: Boolean(row.enabled),
+    tagId: row.tag_id,
+  };
+}
+
+function upsertMediaItem(item) {
+  const now = new Date().toISOString();
+
+  upsertMediaItemStatement.run(
+    item.provider,
+    item.mediaType,
+    item.providerUri,
+    item.sourceUrl,
+    item.title,
+    item.subtitle,
+    item.artistNames,
+    item.showName,
+    item.albumName,
+    item.artworkUrl,
+    item.localArtworkPath,
+    item.durationMs,
+    now,
+    now,
+  );
+
+  return selectMediaItemByProviderUri.get(item.providerUri);
+}
+
+function syncMediaLibraryFromExistingActions() {
+  const manifestByUri = getSpotifyArtworkManifestByUri();
+  const rows = selectSpotifyActionCards.all();
+
+  for (const row of rows) {
+    const item = mediaItemFromSpotifyAction(row, manifestByUri);
+
+    if (!item) {
+      continue;
+    }
+
+    const mediaItem = upsertMediaItem(item);
+    const now = new Date().toISOString();
+    upsertCardMediaAssignmentStatement.run(item.tagId, mediaItem.id, item.enabled ? 1 : 0, now, now);
+  }
+}
+
 async function exchangeSpotifyCode(code) {
   const config = getSpotifyConfig();
 
@@ -1193,6 +1389,7 @@ async function sendSpotifyPause(deviceId = getSetting("spotify_default_device_id
 
 // A restart should not make the next card scan look like a second tap.
 clearSpotifyActivePlayback();
+syncMediaLibraryFromExistingActions();
 
 function shapeSonosDevice(row) {
   return {
@@ -1940,6 +2137,39 @@ function shapeAction(row) {
   };
 }
 
+function shapeMediaItem(row) {
+  const assignedCardNames = row.assigned_card_names ? row.assigned_card_names.split(", ") : [];
+  const assignedTagIds = row.assigned_tag_ids ? row.assigned_tag_ids.split(", ") : [];
+
+  return {
+    id: row.id,
+    provider: row.provider,
+    media_type: row.media_type,
+    provider_uri: row.provider_uri,
+    source_url: row.source_url,
+    title: row.title,
+    subtitle: row.subtitle,
+    artist_names: row.artist_names,
+    show_name: row.show_name,
+    album_name: row.album_name,
+    artwork_url: row.artwork_url,
+    local_artwork_path: row.local_artwork_path,
+    duration_ms: row.duration_ms,
+    print_status: row.print_status,
+    assigned_card_count: Number(row.assigned_card_count) || 0,
+    assigned_card_names: assignedCardNames,
+    assigned_tag_ids: assignedTagIds,
+    assignment_status: Number(row.assigned_card_count) > 0 ? "assigned" : "unassigned",
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function getMediaItems(limit = 100) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  return selectMediaItems.all(safeLimit).map(shapeMediaItem);
+}
+
 function shapeCard(row) {
   return {
     id: row.id,
@@ -2189,6 +2419,57 @@ function renderKnownCards(cards, sonosDevices, receivers) {
             <th>Notes</th>
             <th>Fake action</th>
             <th>Test</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderMediaLibrary(mediaItems) {
+  if (!mediaItems.length) {
+    return `<div class="empty">No media items yet. Spotify card actions will appear here after the app syncs them.</div>`;
+  }
+
+  const rows = mediaItems
+    .map(
+      (item) => `
+        <tr>
+          <td>
+            <strong>${escapeHtml(item.title)}</strong>
+            <span class="small-text">${escapeHtml(item.subtitle) || `<span class="muted">No subtitle</span>`}</span>
+          </td>
+          <td>
+            <span class="pill known">${escapeHtml(item.provider)}</span>
+            <span class="small-text">${escapeHtml(item.media_type)}</span>
+          </td>
+          <td>
+            <code>${escapeHtml(item.provider_uri)}</code>
+            ${item.local_artwork_path ? `<span class="small-text">${escapeHtml(item.local_artwork_path)}</span>` : ""}
+          </td>
+          <td>
+            <span class="action-status">${escapeHtml(item.assignment_status)}</span>
+            <span class="small-text">${item.assigned_card_names.length ? escapeHtml(item.assigned_card_names.join(", ")) : "No card assigned"}</span>
+          </td>
+          <td>
+            <span class="action-status">${escapeHtml(item.print_status)}</span>
+          </td>
+        </tr>
+      `,
+    )
+    .join("");
+
+  return `
+    <div class="table-wrap">
+      <table class="media-table">
+        <thead>
+          <tr>
+            <th>Media</th>
+            <th>Type</th>
+            <th>URI / Artwork</th>
+            <th>Assignment</th>
+            <th>Print</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -2528,6 +2809,7 @@ function renderSpotifySettings(status) {
 function renderHomePage() {
   const scans = getRecentScans(50);
   const cards = getCards(100);
+  const mediaItems = getMediaItems(100);
   const actionEvents = getActionEvents(20);
   const sonosSettings = getSonosSettings();
   const sonosDevices = getSonosDevices();
@@ -3190,6 +3472,10 @@ function renderHomePage() {
             <strong>${cardCount}</strong>
           </div>
           <div class="status">
+            <span>Media items</span>
+            <strong>${mediaItems.length}</strong>
+          </div>
+          <div class="status">
             <span>Action events</span>
             <strong>${actionEventCount}</strong>
           </div>
@@ -3253,6 +3539,13 @@ function renderHomePage() {
         ${table}
       </section>
 
+      <section aria-label="Media library">
+        <div class="section-heading">
+          <h2>Media library</h2>
+        </div>
+        ${renderMediaLibrary(mediaItems)}
+      </section>
+
       <section aria-label="Known cards">
         <div class="section-heading">
           <h2>Known cards</h2>
@@ -3288,6 +3581,7 @@ async function handleRequest(request, response) {
         exists: fs.existsSync(DB_PATH),
         scan_count: countScans.get().scan_count,
         card_count: countCards.get().card_count,
+        media_item_count: countMediaItems.get().media_item_count,
         action_event_count: countActionEvents.get().action_event_count,
         receiver_count: countReceivers.get().receiver_count,
       },
@@ -3328,6 +3622,14 @@ async function handleRequest(request, response) {
     sendJson(response, 200, {
       ok: true,
       cards: getCards(url.searchParams.get("limit") || 100),
+    });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/media") {
+    sendJson(response, 200, {
+      ok: true,
+      media_items: getMediaItems(url.searchParams.get("limit") || 100),
     });
     return;
   }

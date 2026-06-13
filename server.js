@@ -1596,7 +1596,7 @@ async function getSpotifyPlaylistItems(playlistId) {
 
   do {
     const payload = await spotifyApiRequest(
-      `/playlists/${encodeURIComponent(playlistId)}/tracks?limit=${limit}&offset=${offset}`,
+      `/playlists/${encodeURIComponent(playlistId)}/items?limit=${limit}&offset=${offset}`,
     );
     const pageItems = Array.isArray(payload.items) ? payload.items : [];
     items.push(...pageItems);

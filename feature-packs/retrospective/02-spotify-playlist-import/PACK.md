@@ -33,6 +33,34 @@ Commit:
 - Spotify playlists can contain local/unavailable items.
 - Episode and track metadata differ.
 - Large playlists may be slow.
+- Spotify's deprecated `/playlists/{id}/tracks` endpoint can return 403 even for user-owned playlists; use `/playlists/{id}/items`.
+
+## Validation Finding: 2026-06-13
+
+During laptop validation, the app could:
+
+- read `/me`;
+- list `/me/playlists`;
+- read `GET /playlists/{id}`;
+- read `GET /playlists/{id}/items`.
+
+But the original import code used:
+
+```text
+GET /playlists/{id}/tracks
+```
+
+That returned:
+
+```text
+HTTP 403 Forbidden
+```
+
+The fix was to use:
+
+```text
+GET /playlists/{id}/items
+```
 
 ## Fix Candidates
 

@@ -190,6 +190,9 @@ The first UI cleanup pass has started:
   - `/reader`
 - `/` redirects to `/media`.
 - A top navigation bar links between the pages and marks the active page.
+- The nav now shows compact counts/status for each area.
+- Activity, Devices, and Reader have page-specific grid layouts instead of a single stacked dashboard.
+- Reader bridge settings and the reader test action now live in separate panels.
 - Media, card, scan, and action-event tables have simple client-side search filters.
 - The Media library can show local Spotify artwork thumbnails through `/assets/spotify-artwork/...`.
 

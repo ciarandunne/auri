@@ -2997,18 +2997,19 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
   const receivers = getReceivers();
   const cardCount = countCards.get().card_count;
   const actionEventCount = countActionEvents.get().action_event_count;
+  const readerStatus = getEspHomeBridgeStatus();
   const navItems = [
-    ["/media", "Media"],
-    ["/cards", "Cards"],
-    ["/activity", "Activity"],
-    ["/devices", "Devices"],
-    ["/reader", "Reader"],
+    ["/media", "Media", mediaItems.length],
+    ["/cards", "Cards", cardCount],
+    ["/activity", "Activity", actionEventCount],
+    ["/devices", "Devices", receivers.length],
+    ["/reader", "Reader", readerStatus.status],
   ];
   const nav = navItems
-    .map(([href, label]) => {
+    .map(([href, label, meta]) => {
       const active = activePage === href ? " active" : "";
       const aria = active ? ` aria-current="page"` : "";
-      return `<a class="${active.trim()}" href="${href}"${aria}>${label}</a>`;
+      return `<a class="${active.trim()}" href="${href}"${aria}><span>${label}</span><span class="nav-count">${escapeHtml(String(meta))}</span></a>`;
     })
     .join("");
 
@@ -3107,6 +3108,8 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
       .page-nav a {
         display: inline-flex;
         align-items: center;
+        justify-content: space-between;
+        gap: 9px;
         min-height: 30px;
         border: 1px solid #d9dee5;
         border-radius: 4px;
@@ -3118,6 +3121,18 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         text-decoration: none;
       }
 
+      .nav-count {
+        min-width: 22px;
+        border-radius: 3px;
+        padding: 2px 5px;
+        background: #f1f4f6;
+        color: #56616b;
+        font-size: 0.7rem;
+        line-height: 1;
+        text-align: center;
+        text-transform: capitalize;
+      }
+
       .page-nav a:hover {
         background: #edf6f3;
         border-color: #b8d4cb;
@@ -3127,6 +3142,40 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         background: #dff0ea;
         border-color: #9ac7ba;
         color: #1e5d51;
+      }
+
+      .page-nav a.active .nav-count {
+        background: #cce5dc;
+        color: #1e5d51;
+      }
+
+      .page-content {
+        display: grid;
+        gap: 16px;
+      }
+
+      .activity-grid,
+      .devices-grid,
+      .reader-grid {
+        display: grid;
+        gap: 16px;
+        align-items: start;
+      }
+
+      .activity-grid {
+        grid-template-columns: minmax(0, 1.45fr) minmax(420px, 0.75fr);
+      }
+
+      .devices-grid {
+        grid-template-columns: minmax(0, 1fr) minmax(360px, 0.78fr);
+      }
+
+      .reader-grid {
+        grid-template-columns: minmax(0, 1fr) minmax(360px, 0.8fr);
+      }
+
+      .grid-full {
+        grid-column: 1 / -1;
       }
 
       section {
@@ -3148,6 +3197,10 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
       }
 
       .section-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
         padding: 11px 14px;
         background: #f1f4f6;
         border-bottom: 1px solid #d9dee5;
@@ -3595,6 +3648,12 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
           flex: 1 1 130px;
         }
 
+        .activity-grid,
+        .devices-grid,
+        .reader-grid {
+          grid-template-columns: 1fr;
+        }
+
         .sonos-toggle-form,
         .sonos-device-form,
         .receiver-form,
@@ -3646,6 +3705,11 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
           border-color: #2b3642;
         }
 
+        .section-heading {
+          background: #202b36;
+          border-bottom-color: #2b3642;
+        }
+
         .page-nav a {
           border-color: #2b3642;
           background: #202b36;
@@ -3654,6 +3718,16 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         .page-nav a.active {
           background: #17352e;
           border-color: #3a7b6d;
+          color: #91e3cc;
+        }
+
+        .nav-count {
+          background: #263441;
+          color: #aeb8bd;
+        }
+
+        .page-nav a.active .nav-count {
+          background: #244b42;
           color: #91e3cc;
         }
 
@@ -3741,7 +3815,9 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
 
       <nav class="page-nav" aria-label="Main pages">${nav}</nav>
 
-      ${content}
+      <div class="page-content">
+        ${content}
+      </div>
     </main>
     <script>
       (() => {
@@ -3824,19 +3900,21 @@ function renderActivityPage() {
     "Activity",
     "Recent scans and action events.",
     `
-      <section aria-label="Recent scans">
-        <div class="section-heading">
-          <h2>Recent scans</h2>
-        </div>
-        ${renderRecentScans(getRecentScans(50))}
-      </section>
+      <div class="activity-grid">
+        <section aria-label="Recent scans">
+          <div class="section-heading">
+            <h2>Recent scans</h2>
+          </div>
+          ${renderRecentScans(getRecentScans(50))}
+        </section>
 
-      <section aria-label="Action events">
-        <div class="section-heading">
-          <h2>Action events</h2>
-        </div>
-        ${renderActionEvents(getActionEvents(20))}
-      </section>
+        <section aria-label="Action events">
+          <div class="section-heading">
+            <h2>Action events</h2>
+          </div>
+          ${renderActionEvents(getActionEvents(20))}
+        </section>
+      </div>
     `,
   );
 }
@@ -3852,32 +3930,34 @@ function renderDevicesPage() {
     "Devices",
     "Receivers, speakers, and Spotify playback target settings.",
     `
-      <section aria-label="Receivers">
-        <div class="section-heading">
-          <h2>Receivers</h2>
-        </div>
-        <div class="settings-panel">
-          ${renderReceivers(receivers, sonosDevices)}
-        </div>
-      </section>
+      <div class="devices-grid">
+        <section aria-label="Receivers" class="grid-full">
+          <div class="section-heading">
+            <h2>Receivers</h2>
+          </div>
+          <div class="settings-panel">
+            ${renderReceivers(receivers, sonosDevices)}
+          </div>
+        </section>
 
-      <section aria-label="Sonos settings">
-        <div class="section-heading">
-          <h2>Sonos devices</h2>
-        </div>
-        <div class="settings-panel">
-          ${renderSonosSettings(sonosSettings, sonosDevices)}
-        </div>
-      </section>
+        <section aria-label="Spotify settings">
+          <div class="section-heading">
+            <h2>Spotify</h2>
+          </div>
+          <div class="settings-panel">
+            ${renderSpotifySettings(spotifyStatus)}
+          </div>
+        </section>
 
-      <section aria-label="Spotify settings">
-        <div class="section-heading">
-          <h2>Spotify</h2>
-        </div>
-        <div class="settings-panel">
-          ${renderSpotifySettings(spotifyStatus)}
-        </div>
-      </section>
+        <section aria-label="Sonos settings">
+          <div class="section-heading">
+            <h2>Sonos devices</h2>
+          </div>
+          <div class="settings-panel">
+            ${renderSonosSettings(sonosSettings, sonosDevices)}
+          </div>
+        </section>
+      </div>
     `,
   );
 }
@@ -3893,20 +3973,25 @@ function renderReaderPage() {
     "Reader",
     "ESPHome bridge status and reader test action.",
     `
-      <section aria-label="ESPHome reader bridge">
-        <div class="section-heading">
-          <h2>ESPHome reader bridge</h2>
-        </div>
-        <div class="settings-panel">
-          ${renderEspHomeBridge(espHomeSettings, espHomeStatus)}
-        </div>
-        <div class="section-heading">
-          <h2>Reader test action</h2>
-        </div>
-        <div class="settings-panel">
-          ${renderReaderTestAction(readerTestActionSettings, sonosDevices)}
-        </div>
-      </section>
+      <div class="reader-grid">
+        <section aria-label="ESPHome reader bridge">
+          <div class="section-heading">
+            <h2>ESPHome reader bridge</h2>
+          </div>
+          <div class="settings-panel">
+            ${renderEspHomeBridge(espHomeSettings, espHomeStatus)}
+          </div>
+        </section>
+
+        <section aria-label="Reader test action">
+          <div class="section-heading">
+            <h2>Reader test action</h2>
+          </div>
+          <div class="settings-panel">
+            ${renderReaderTestAction(readerTestActionSettings, sonosDevices)}
+          </div>
+        </section>
+      </div>
     `,
   );
 }

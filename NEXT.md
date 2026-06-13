@@ -82,12 +82,45 @@ Important: do not immediately tap the same card twice unless testing stop/pause,
 
 The intended stop behavior is: tap the active card a second time. We do not currently plan to add a separate stop card.
 
+## When Back At The Laptop
+
+Test the new playlist import and next-card assignment flow end to end:
+
+1. Restart Kids Tunes:
+
+```powershell
+Ctrl+C
+npm.cmd start
+```
+
+2. Open:
+
+```text
+http://127.0.0.1:8787/media
+```
+
+3. Reconnect Spotify from the UI so the token has `playlist-read-private`.
+4. Paste a Spotify playlist URL into "Import Spotify playlist".
+5. Click "Import Playlist".
+6. Confirm playlist items appear in the Media table.
+7. Pick one unassigned item and click "Assign Next Card".
+8. Confirm the pending assignment banner appears.
+9. Tap one blank physical card on the RFID reader.
+10. Confirm the card appears as assigned to that media item.
+11. Tap that same card once to play it.
+12. Tap that same card a second time to pause/stop it.
+
+Safety check: if a known card is tapped during pending assignment, Kids Tunes should not overwrite it. It should log a blocked `assign_media` event and keep waiting for a blank/unknown card.
+
+If playback does not start after assignment, check `/activity` first. It should show whether the scan assigned the card, tried playback, or hit a Spotify/device error.
+
 ## Latest Code Changes Not Yet Restarted
 
 `server.js` has recent changes that require an app restart:
 
 - Multi-page UI refinements.
 - Spotify playlist import foundation on `/media`.
+- Playlist-to-card "Assign Next Card" flow.
 - New Spotify OAuth scope: `playlist-read-private`.
 - Spotify play command verification/retry behavior.
 
@@ -316,7 +349,7 @@ After the restart/reconnect/import test above, the best next implementation choi
    - Allow play/pause and volume control from a phone.
    - Keep admin setup pages separate.
 
-Recommended next build: do item 1 first. It makes the playlist import immediately useful with the physical cards.
+Recommended next build: do item 2 next. Artwork caching makes imported playlist items useful for the media table and printable labels.
 
 ## Useful Checks
 

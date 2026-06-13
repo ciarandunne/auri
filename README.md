@@ -230,6 +230,22 @@ Playlist import API:
 }
 ```
 
+After media is imported, the Media page can assign a physical card:
+
+1. Click `Assign Next Card` beside an unassigned Spotify media item.
+2. Scan an unknown RFID/NFC card within 15 minutes.
+3. Kids Tunes creates the card, sets an enabled `spotify_play` action, and links it to the media item.
+
+Known cards are protected during this flow. If a known card is scanned while an assignment is pending, the app records a blocked assignment event and leaves the pending assignment open.
+
+Assignment APIs:
+
+```text
+GET  /api/media/pending-assignment
+POST /api/media/assign-next
+POST /api/media/assign-next/cancel
+```
+
 Sonos actions can target a specific Sonos device or `Receiver default speaker`. Receiver default uses the `reader_id` on the scan to choose the speaker.
 
 `GET /api/actions/08-9F-69-C8`

@@ -255,18 +255,48 @@ Example payload:
 
 Important: Spotify auth now requests `playlist-read-private`. After restarting with this code, reconnect Spotify once from the app so the token has the new playlist scope.
 
-Next playlist step: add a "assign next scanned card to this media item" workflow from `/media`, so a playlist item can become a physical card without manually copying URLs.
+The playlist-to-card assignment foundation has started:
+
+- `/media` now shows an "Assign Next Card" button beside unassigned Spotify media items.
+- Pressing the button stores one pending assignment for 15 minutes.
+- The Media library shows a pending banner with the selected title and expiry time.
+- The next unknown scanned card is automatically:
+  - created as a known card;
+  - named from the media item title;
+  - given an enabled `spotify_play` action;
+  - linked in `card_media_assignments`;
+  - recorded as an `assign_media` action event;
+  - cleared from the pending state.
+- If a known card is scanned while an assignment is pending, Kids Tunes does not overwrite it and does not run its playback action. It records a blocked `assign_media` event and leaves the pending assignment open.
+- Pending assignment API endpoints:
+
+```text
+GET  /api/media/pending-assignment
+POST /api/media/assign-next
+POST /api/media/assign-next/cancel
+```
+
+Example start-assignment payload:
+
+```json
+{
+  "media_item_id": 1
+}
+```
+
+Next playlist step: test this with a real imported playlist and physical blank card, then improve the UI feedback after assignment.
 
 ## Best Next Build Choices
 
 After the restart/reconnect/import test above, the best next implementation choices are:
 
 1. Playlist-to-card assignment flow:
-   - Add an "Assign next scanned card" button beside each unassigned media item on `/media`.
-   - Store a pending assignment in app settings, including media item ID and timestamp.
-   - When the next unknown card is scanned, create/update the card, set its action to `spotify_play`, and link it in `card_media_assignments`.
-   - Clear the pending assignment after success or after a timeout.
-   - Show a clear pending state in the UI so it is obvious what the next scanned card will do.
+   - Foundation done: "Assign Next Card" button beside each unassigned Spotify media item on `/media`.
+   - Foundation done: pending assignment stored in app settings with a 15-minute expiry.
+   - Foundation done: next unknown card creates the card, sets `spotify_play`, and links `card_media_assignments`.
+   - Foundation done: known cards are protected from accidental overwrite.
+   - Next: test with a real imported playlist and physical blank card.
+   - Next: add richer success/failure feedback directly on `/media` after scan.
 
 2. Playlist artwork caching:
    - Download imported Spotify artwork into `data/spotify-artwork/`.

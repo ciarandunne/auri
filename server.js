@@ -12,6 +12,7 @@ const HOST = process.env.HOST || "127.0.0.1";
 const DB_PATH = process.env.KIDS_TUNES_DB_PATH || getDefaultDatabasePath();
 const ESPHOME_SCAN_DEBOUNCE_MS = 2500;
 const TAGREADER_BUZZER_SWITCH_KEY = 1985256757;
+const MEDIA_ASSIGNMENT_TTL_MS = 15 * 60 * 1000;
 const SPOTIFY_REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI || `http://127.0.0.1:${PORT}/spotify/callback`;
 const SPOTIFY_SCOPES = [
   "playlist-read-private",
@@ -402,6 +403,12 @@ const selectMediaItemByProviderUri = db.prepare(`
   SELECT *
   FROM media_items
   WHERE provider_uri = ?
+`);
+
+const selectMediaItemById = db.prepare(`
+  SELECT *
+  FROM media_items
+  WHERE id = ?
 `);
 
 const upsertCardMediaAssignmentStatement = db.prepare(`
@@ -1146,6 +1153,170 @@ function upsertMediaItem(item) {
   );
 
   return selectMediaItemByProviderUri.get(item.providerUri);
+}
+
+function getMediaItemById(id) {
+  const mediaItemId = Number(id);
+
+  if (!Number.isInteger(mediaItemId) || mediaItemId < 1) {
+    return null;
+  }
+
+  return selectMediaItemById.get(mediaItemId) || null;
+}
+
+function getPendingMediaAssignment() {
+  const raw = getSetting("pending_media_assignment", "");
+
+  if (!raw) {
+    return null;
+  }
+
+  let pending;
+
+  try {
+    pending = JSON.parse(raw);
+  } catch {
+    setSetting("pending_media_assignment", "");
+    return null;
+  }
+
+  const expiresAt = Date.parse(pending.expires_at || "");
+
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    setSetting("pending_media_assignment", "");
+    return null;
+  }
+
+  const mediaItem = getMediaItemById(pending.media_item_id);
+
+  if (!mediaItem) {
+    setSetting("pending_media_assignment", "");
+    return null;
+  }
+
+  return {
+    media_item_id: mediaItem.id,
+    title: mediaItem.title,
+    provider_uri: mediaItem.provider_uri,
+    created_at: pending.created_at,
+    expires_at: pending.expires_at,
+    media_item: mediaItem,
+  };
+}
+
+function setPendingMediaAssignment(mediaItemId) {
+  const mediaItem = getMediaItemById(mediaItemId);
+
+  if (!mediaItem) {
+    return { error: "media_item_id was not found" };
+  }
+
+  if (mediaItem.provider !== "spotify" || !normalizeSpotifyUri(mediaItem.provider_uri)) {
+    return { error: "Only Spotify media items can be assigned to a card right now" };
+  }
+
+  const createdAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + MEDIA_ASSIGNMENT_TTL_MS).toISOString();
+  const pending = {
+    media_item_id: mediaItem.id,
+    title: mediaItem.title,
+    provider_uri: mediaItem.provider_uri,
+    created_at: createdAt,
+    expires_at: expiresAt,
+  };
+
+  setSetting("pending_media_assignment", JSON.stringify(pending));
+  return getPendingMediaAssignment();
+}
+
+function clearPendingMediaAssignment() {
+  setSetting("pending_media_assignment", "");
+}
+
+function insertAssignmentActionEvent(scanId, tagId, pending, status, message) {
+  const createdAt = new Date().toISOString();
+  const result = insertActionEvent.run(
+    scanId,
+    tagId,
+    "assign_media",
+    pending.provider_uri,
+    status,
+    message,
+    createdAt,
+  );
+
+  return {
+    id: Number(result.lastInsertRowid),
+    scan_id: scanId,
+    tag_id: tagId,
+    action_type: "assign_media",
+    action_target: pending.provider_uri,
+    status,
+    message,
+    created_at: createdAt,
+  };
+}
+
+function maybeAssignPendingMediaToScan(scanId, scan, existingCard) {
+  const pending = getPendingMediaAssignment();
+
+  if (!pending) {
+    return null;
+  }
+
+  if (existingCard) {
+    return {
+      card: existingCard,
+      actionEvent: insertAssignmentActionEvent(
+        scanId,
+        scan.tagId,
+        pending,
+        "blocked",
+        `Pending assignment kept open because ${scan.tagId} is already assigned to ${existingCard.name}`,
+      ),
+      consumed: false,
+    };
+  }
+
+  const mediaItem = pending.media_item;
+  const subtitle = mediaItem.subtitle || mediaItem.artist_names || mediaItem.show_name || mediaItem.album_name || "";
+  const notes = subtitle ? `Assigned from media library: ${subtitle}` : "Assigned from media library";
+  const card = upsertCard({
+    tagId: scan.tagId,
+    name: mediaItem.title,
+    notes,
+  });
+  const action = upsertAction({
+    tagId: scan.tagId,
+    actionType: "spotify_play",
+    actionTarget: mediaItem.provider_uri,
+    enabled: true,
+  });
+
+  if (action.error) {
+    return {
+      card,
+      actionEvent: insertAssignmentActionEvent(scanId, scan.tagId, pending, "failed", action.error),
+      consumed: false,
+    };
+  }
+
+  const now = new Date().toISOString();
+  upsertCardMediaAssignmentStatement.run(scan.tagId, mediaItem.id, 1, now, now);
+  clearPendingMediaAssignment();
+
+  return {
+    card: getCard(scan.tagId),
+    actionEvent: insertAssignmentActionEvent(
+      scanId,
+      scan.tagId,
+      pending,
+      "assigned",
+      `Assigned ${scan.tagId} to ${mediaItem.title}`,
+    ),
+    consumed: true,
+  };
 }
 
 function syncMediaLibraryFromExistingActions() {
@@ -2082,6 +2253,22 @@ async function createScan(scan) {
   const scanId = Number(result.lastInsertRowid);
   const card = getCard(scan.tagId);
   const receiver = getReceiver(scan.readerId);
+  const pendingAssignment = maybeAssignPendingMediaToScan(scanId, scan, card);
+
+  if (pendingAssignment) {
+    return {
+      id: scanId,
+      reader_id: scan.readerId,
+      tag_id: scan.tagId,
+      source: scan.source,
+      scanned_at: scannedAt,
+      known: Boolean(pendingAssignment.card),
+      card: pendingAssignment.card,
+      receiver,
+      action_event: pendingAssignment.actionEvent,
+    };
+  }
+
   const actionEvent = await maybeCreateActionEvent(scanId, scan, card, receiver);
 
   return {
@@ -2679,7 +2866,7 @@ function renderKnownCards(cards, sonosDevices, receivers) {
   `;
 }
 
-function renderMediaLibrary(mediaItems) {
+function renderMediaLibrary(mediaItems, pendingAssignment = null) {
   if (!mediaItems.length) {
     return `<div class="empty">No media items yet. Spotify card actions will appear here after the app syncs them.</div>`;
   }
@@ -2697,7 +2884,25 @@ function renderMediaLibrary(mediaItems) {
           item.assignment_status,
           item.print_status,
           item.assigned_card_names.join(" "),
+          pendingAssignment && pendingAssignment.media_item_id === item.id ? "pending" : "",
         ].join(" ");
+        const isPending = pendingAssignment && pendingAssignment.media_item_id === item.id;
+        const canAssign = item.assignment_status === "unassigned" && item.provider === "spotify";
+        const assignmentControl = isPending
+          ? `
+              <form class="inline-form" method="post" action="/media/assign-next/cancel">
+                <span class="action-status">waiting for card</span>
+                <button type="submit">Cancel</button>
+              </form>
+            `
+          : canAssign
+            ? `
+                <form class="inline-form" method="post" action="/media/assign-next">
+                  <input type="hidden" name="media_item_id" value="${escapeHtml(item.id)}">
+                  <button type="submit">Assign Next Card</button>
+                </form>
+              `
+            : `<span class="muted small-text">No action</span>`;
 
         return `
         <tr data-filter-row data-search="${escapeHtml(searchText.toLowerCase())}">
@@ -2734,6 +2939,7 @@ function renderMediaLibrary(mediaItems) {
           <td>
             <span class="action-status">${escapeHtml(item.print_status)}</span>
           </td>
+          <td>${assignmentControl}</td>
         </tr>
       `;
       },
@@ -2756,6 +2962,7 @@ function renderMediaLibrary(mediaItems) {
             <th>URI / Artwork</th>
             <th>Assignment</th>
             <th>Print</th>
+            <th>Next card</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -2810,6 +3017,29 @@ function renderSpotifyPlaylistImport(status) {
           <input name="playlist_url" placeholder="https://open.spotify.com/playlist/..." maxlength="500" required>
         </label>
         <button type="submit">Import Playlist</button>
+      </form>
+    </div>
+  `;
+}
+
+function renderPendingMediaAssignment(pendingAssignment) {
+  if (!pendingAssignment) {
+    return `
+      <div class="pending-assignment empty">
+        No pending card assignment. Choose "Assign Next Card" beside an unassigned media item.
+      </div>
+    `;
+  }
+
+  return `
+    <div class="pending-assignment active">
+      <div>
+        <strong>Next unknown card will become ${escapeHtml(pendingAssignment.title)}</strong>
+        <span class="small-text">Expires at ${escapeHtml(formatScanTime(pendingAssignment.expires_at))}</span>
+        <span class="small-text"><code>${escapeHtml(pendingAssignment.provider_uri)}</code></span>
+      </div>
+      <form class="inline-form" method="post" action="/media/assign-next/cancel">
+        <button type="submit">Cancel</button>
       </form>
     </div>
   `;
@@ -3683,6 +3913,13 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         margin-top: 12px;
       }
 
+      .inline-form {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
       .playlist-import-form {
         grid-template-columns: minmax(280px, 1fr) auto;
         margin-top: 12px;
@@ -3705,6 +3942,19 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
 
       .settings-panel {
         padding: 14px;
+      }
+
+      .pending-assignment {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 14px;
+      }
+
+      .pending-assignment.active {
+        background: #fff8e8;
+        border-bottom: 1px solid #ead7ac;
       }
 
       .assign-form span,
@@ -3914,6 +4164,10 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         .assign-form {
           grid-template-columns: 1fr;
         }
+
+        .pending-assignment {
+          display: grid;
+        }
       }
 
       @media (prefers-color-scheme: dark) {
@@ -4016,6 +4270,11 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
           color: #ffad8a;
         }
 
+        .pending-assignment.active {
+          background: #3a3020;
+          border-bottom-color: #5e4c28;
+        }
+
         .sonos-mode.armed {
           background: #17352e;
           color: #91e3cc;
@@ -4110,6 +4369,7 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
 
 function renderMediaPage() {
   const spotifyStatus = getSpotifyStatus();
+  const pendingAssignment = getPendingMediaAssignment();
 
   return renderPageShell(
     "/media",
@@ -4129,7 +4389,8 @@ function renderMediaPage() {
         <div class="section-heading">
           <h2>Media library</h2>
         </div>
-        ${renderMediaLibrary(getMediaItems(100))}
+        ${renderPendingMediaAssignment(pendingAssignment)}
+        ${renderMediaLibrary(getMediaItems(100), pendingAssignment)}
       </section>
     `,
   );
@@ -4362,7 +4623,39 @@ async function handleRequest(request, response) {
     sendJson(response, 200, {
       ok: true,
       media_items: getMediaItems(url.searchParams.get("limit") || 100),
+      pending_assignment: getPendingMediaAssignment(),
     });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/media/pending-assignment") {
+    sendJson(response, 200, {
+      ok: true,
+      pending_assignment: getPendingMediaAssignment(),
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/media/assign-next") {
+    try {
+      const payload = await readPayload(request);
+      const pendingAssignment = setPendingMediaAssignment(payload.media_item_id);
+
+      if (pendingAssignment.error) {
+        sendJson(response, 400, { ok: false, error: pendingAssignment.error });
+        return;
+      }
+
+      sendJson(response, 200, { ok: true, pending_assignment: pendingAssignment });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/media/assign-next/cancel") {
+    clearPendingMediaAssignment();
+    sendJson(response, 200, { ok: true, pending_assignment: null });
     return;
   }
 
@@ -4820,6 +5113,29 @@ async function handleRequest(request, response) {
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error.message, spotify: getSpotifyStatus() });
     }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/media/assign-next") {
+    try {
+      const payload = await readPayload(request);
+      const pendingAssignment = setPendingMediaAssignment(payload.media_item_id);
+
+      if (pendingAssignment.error) {
+        sendJson(response, 400, { ok: false, error: pendingAssignment.error });
+        return;
+      }
+
+      redirect(response, "/media");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/media/assign-next/cancel") {
+    clearPendingMediaAssignment();
+    redirect(response, "/media");
     return;
   }
 

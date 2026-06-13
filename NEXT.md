@@ -5,10 +5,44 @@ Use this file as the first handoff note when picking up the project in a new cha
 ## Read These First
 
 1. `NEXT.md` - canonical handoff, immediate state, and next actions.
-2. `PROJECT_STATUS.md` - older background/history only.
-3. `README.md` - local run/test instructions and endpoint examples.
-4. `M5DIAL_PLAN.md` - plan and evidence for buying/testing two M5Dial receivers.
-5. `server.js` - current app implementation.
+2. `feature-packs/README.md` - remote-work process and prepared feature/validation packs.
+3. `PROJECT_STATUS.md` - older background/history only.
+4. `README.md` - local run/test instructions and endpoint examples.
+5. `M5DIAL_PLAN.md` - plan and evidence for buying/testing two M5Dial receivers.
+6. `server.js` - current app implementation.
+
+## Remote Work Rule
+
+When working away from the laptop/hardware, prefer feature packs over live app changes.
+
+Remote mode:
+
+- Do not change live app behavior unless explicitly requested.
+- Prepare feature packs under `feature-packs/`.
+- Include design, draft code, schema/API notes, UI notes, risks, and laptop test plans.
+- Use retrospective validation packs for integrated drafts that still need real-world proof.
+
+Laptop mode:
+
+- Pick one pack.
+- Integrate or validate it deliberately.
+- Test with real Spotify, Echo, ESP reader, RFID cards, NAS, or browser as required.
+- Fix what breaks before starting the next pack.
+
+Current first forward-looking pack:
+
+```text
+feature-packs/printable-label-queue/
+```
+
+Current retrospective validation packs:
+
+```text
+feature-packs/retrospective/01-multi-page-ui/
+feature-packs/retrospective/02-spotify-playlist-import/
+feature-packs/retrospective/03-next-card-assignment/
+feature-packs/retrospective/04-playlist-artwork-caching/
+```
 
 ## Current State
 

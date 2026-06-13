@@ -4175,12 +4175,13 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
       }
 
       .playlist-import-form {
-        grid-template-columns: minmax(0, 1fr) auto;
-        justify-content: stretch;
+        grid-template-columns: minmax(0, 1fr);
+        max-width: 760px;
         margin-top: 12px;
       }
 
       .playlist-import-form button {
+        justify-self: start;
         width: max-content;
       }
 
@@ -4430,12 +4431,6 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
 
         .pending-assignment {
           display: grid;
-        }
-      }
-
-      @media (max-width: 900px) {
-        .playlist-import-form {
-          grid-template-columns: 1fr;
         }
       }
 

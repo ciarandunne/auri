@@ -62,6 +62,20 @@ The fix was to use:
 GET /playlists/{id}/items
 ```
 
+Second finding from the same validation: the current `/items` response stores the playable object under:
+
+```text
+entry.item
+```
+
+The original importer expected:
+
+```text
+entry.track
+```
+
+That caused a silent import result of `imported_count: 0`, `skipped_count: 7`. The importer should accept either `entry.track` or `entry.item`.
+
 ## Fix Candidates
 
 - Better scope warning in UI.

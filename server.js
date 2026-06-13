@@ -1611,7 +1611,7 @@ async function getSpotifyPlaylistItems(playlistId) {
 }
 
 function mediaItemFromSpotifyPlaylistEntry(entry, playlist, importedAt) {
-  const media = entry && entry.track ? entry.track : null;
+  const media = entry && (entry.track || entry.item) ? entry.track || entry.item : null;
 
   if (!media || media.is_local) {
     return null;

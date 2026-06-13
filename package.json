@@ -1,0 +1,16 @@
+{
+  "name": "kids-tunes",
+  "version": "0.1.0",
+  "description": "A tiny local scan receiver for a DIY NFC/RFID music box.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "esphome-native-api": "^1.0.9"
+  }
+}

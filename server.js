@@ -1,0 +1,3964 @@
+const http = require("node:http");
+const fs = require("node:fs");
+const path = require("node:path");
+const crypto = require("node:crypto");
+const { URL } = require("node:url");
+const { DatabaseSync } = require("node:sqlite");
+const { Connection: EspHomeConnection } = require("esphome-native-api");
+const { pb: EspHomePb } = require("esphome-native-api/lib/utils/messages");
+
+const PORT = Number(process.env.PORT || 8787);
+const HOST = process.env.HOST || "127.0.0.1";
+const DB_PATH = process.env.KIDS_TUNES_DB_PATH || getDefaultDatabasePath();
+const ESPHOME_SCAN_DEBOUNCE_MS = 2500;
+const TAGREADER_BUZZER_SWITCH_KEY = 1985256757;
+const SPOTIFY_REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI || `http://127.0.0.1:${PORT}/spotify/callback`;
+const SPOTIFY_SCOPES = [
+  "user-read-playback-state",
+  "user-modify-playback-state",
+];
+
+let espHomeBridge = {
+  connection: null,
+  status: "disabled",
+  lastError: "",
+  lastLog: "",
+  lastTagId: "",
+  lastScanAt: "",
+  startedAt: "",
+  logHistory: [],
+  recentTags: new Map(),
+};
+
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+
+const db = new DatabaseSync(DB_PATH);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS scan_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reader_id TEXT NOT NULL,
+    tag_id TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'api',
+    scanned_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_scan_events_scanned_at
+  ON scan_events(scanned_at DESC);
+
+  CREATE TABLE IF NOT EXISTS cards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tag_id TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_cards_tag_id
+  ON cards(tag_id);
+
+  CREATE TABLE IF NOT EXISTS card_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tag_id TEXT NOT NULL UNIQUE,
+    action_type TEXT NOT NULL DEFAULT 'none',
+    action_target TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (tag_id) REFERENCES cards(tag_id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_card_actions_tag_id
+  ON card_actions(tag_id);
+
+  CREATE TABLE IF NOT EXISTS action_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id INTEGER NOT NULL,
+    tag_id TEXT NOT NULL,
+    action_type TEXT NOT NULL,
+    action_target TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (scan_id) REFERENCES scan_events(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_action_events_created_at
+  ON action_events(created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS sonos_devices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    host TEXT NOT NULL UNIQUE,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sonos_devices_host
+  ON sonos_devices(host);
+
+  CREATE TABLE IF NOT EXISTS receivers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reader_id TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    child_name TEXT NOT NULL DEFAULT '',
+    default_sonos_host TEXT NOT NULL DEFAULT '',
+    spotify_account_label TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_receivers_reader_id
+  ON receivers(reader_id);
+`);
+
+const insertScan = db.prepare(`
+  INSERT INTO scan_events (reader_id, tag_id, source, scanned_at)
+  VALUES (?, ?, ?, ?)
+`);
+
+const selectScans = db.prepare(`
+  SELECT
+    scan_events.id,
+    scan_events.reader_id,
+    scan_events.tag_id,
+    scan_events.source,
+    scan_events.scanned_at,
+    cards.id AS card_id,
+    cards.name AS card_name,
+    cards.notes AS card_notes,
+    card_actions.action_type AS configured_action_type,
+    card_actions.action_target AS configured_action_target,
+    card_actions.enabled AS configured_action_enabled,
+    action_events.id AS action_event_id,
+    action_events.action_type AS action_event_type,
+    action_events.action_target AS action_event_target,
+    action_events.status AS action_event_status,
+    action_events.message AS action_event_message,
+    action_events.created_at AS action_event_created_at,
+    receivers.id AS receiver_id,
+    receivers.name AS receiver_name,
+    receivers.child_name AS receiver_child_name,
+    receivers.default_sonos_host AS receiver_default_sonos_host,
+    receivers.spotify_account_label AS receiver_spotify_account_label,
+    receivers.enabled AS receiver_enabled
+  FROM scan_events
+  LEFT JOIN cards ON cards.tag_id = scan_events.tag_id
+  LEFT JOIN card_actions ON card_actions.tag_id = scan_events.tag_id
+  LEFT JOIN action_events ON action_events.scan_id = scan_events.id
+  LEFT JOIN receivers ON receivers.reader_id = scan_events.reader_id
+  ORDER BY scan_events.scanned_at DESC, scan_events.id DESC
+  LIMIT ?
+`);
+
+const selectCards = db.prepare(`
+  SELECT
+    cards.id,
+    cards.tag_id,
+    cards.name,
+    cards.notes,
+    cards.created_at,
+    cards.updated_at,
+    COALESCE(card_actions.action_type, 'none') AS action_type,
+    COALESCE(card_actions.action_target, '') AS action_target,
+    COALESCE(card_actions.enabled, 0) AS action_enabled
+  FROM cards
+  LEFT JOIN card_actions ON card_actions.tag_id = cards.tag_id
+  ORDER BY cards.updated_at DESC, cards.id DESC
+  LIMIT ?
+`);
+
+const selectCardByTag = db.prepare(`
+  SELECT
+    cards.id,
+    cards.tag_id,
+    cards.name,
+    cards.notes,
+    cards.created_at,
+    cards.updated_at,
+    COALESCE(card_actions.action_type, 'none') AS action_type,
+    COALESCE(card_actions.action_target, '') AS action_target,
+    COALESCE(card_actions.enabled, 0) AS action_enabled
+  FROM cards
+  LEFT JOIN card_actions ON card_actions.tag_id = cards.tag_id
+  WHERE cards.tag_id = ?
+`);
+
+const upsertCardStatement = db.prepare(`
+  INSERT INTO cards (tag_id, name, notes, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(tag_id) DO UPDATE SET
+    name = excluded.name,
+    notes = excluded.notes,
+    updated_at = excluded.updated_at
+`);
+
+const selectActionByTag = db.prepare(`
+  SELECT id, tag_id, action_type, action_target, enabled, created_at, updated_at
+  FROM card_actions
+  WHERE tag_id = ?
+`);
+
+const upsertActionStatement = db.prepare(`
+  INSERT INTO card_actions (tag_id, action_type, action_target, enabled, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?)
+  ON CONFLICT(tag_id) DO UPDATE SET
+    action_type = excluded.action_type,
+    action_target = excluded.action_target,
+    enabled = excluded.enabled,
+    updated_at = excluded.updated_at
+`);
+
+const insertActionEvent = db.prepare(`
+  INSERT INTO action_events (scan_id, tag_id, action_type, action_target, status, message, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+`);
+
+const selectActionEvents = db.prepare(`
+  SELECT id, scan_id, tag_id, action_type, action_target, status, message, created_at
+  FROM action_events
+  ORDER BY created_at DESC, id DESC
+  LIMIT ?
+`);
+
+const selectSetting = db.prepare(`
+  SELECT value
+  FROM app_settings
+  WHERE key = ?
+`);
+
+const upsertSettingStatement = db.prepare(`
+  INSERT INTO app_settings (key, value, updated_at)
+  VALUES (?, ?, ?)
+  ON CONFLICT(key) DO UPDATE SET
+    value = excluded.value,
+    updated_at = excluded.updated_at
+`);
+
+const selectSonosDevices = db.prepare(`
+  SELECT id, name, host, enabled, created_at, updated_at
+  FROM sonos_devices
+  ORDER BY name ASC, id ASC
+`);
+
+const selectSonosDeviceByHost = db.prepare(`
+  SELECT id, name, host, enabled, created_at, updated_at
+  FROM sonos_devices
+  WHERE host = ?
+`);
+
+const upsertSonosDeviceStatement = db.prepare(`
+  INSERT INTO sonos_devices (name, host, enabled, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(host) DO UPDATE SET
+    name = excluded.name,
+    enabled = excluded.enabled,
+    updated_at = excluded.updated_at
+`);
+
+const updateSonosDeviceByIdStatement = db.prepare(`
+  UPDATE sonos_devices
+  SET name = ?, host = ?, enabled = ?, updated_at = ?
+  WHERE id = ?
+`);
+
+const selectReceivers = db.prepare(`
+  SELECT id, reader_id, name, child_name, default_sonos_host, spotify_account_label, enabled, created_at, updated_at
+  FROM receivers
+  ORDER BY name ASC, id ASC
+`);
+
+const selectReceiverByReaderId = db.prepare(`
+  SELECT id, reader_id, name, child_name, default_sonos_host, spotify_account_label, enabled, created_at, updated_at
+  FROM receivers
+  WHERE reader_id = ?
+`);
+
+const upsertReceiverStatement = db.prepare(`
+  INSERT INTO receivers (reader_id, name, child_name, default_sonos_host, spotify_account_label, enabled, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(reader_id) DO UPDATE SET
+    name = excluded.name,
+    child_name = excluded.child_name,
+    default_sonos_host = excluded.default_sonos_host,
+    spotify_account_label = excluded.spotify_account_label,
+    enabled = excluded.enabled,
+    updated_at = excluded.updated_at
+`);
+
+const updateReceiverByIdStatement = db.prepare(`
+  UPDATE receivers
+  SET reader_id = ?, name = ?, child_name = ?, default_sonos_host = ?, spotify_account_label = ?, enabled = ?, updated_at = ?
+  WHERE id = ?
+`);
+
+const countScans = db.prepare("SELECT COUNT(*) AS scan_count FROM scan_events");
+const countCards = db.prepare("SELECT COUNT(*) AS card_count FROM cards");
+const countActionEvents = db.prepare("SELECT COUNT(*) AS action_event_count FROM action_events");
+const countReceivers = db.prepare("SELECT COUNT(*) AS receiver_count FROM receivers");
+
+function getDefaultDatabasePath() {
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) {
+    return path.join(process.env.LOCALAPPDATA, "Kids Tunes", "kids_tunes.db");
+  }
+
+  return path.join(__dirname, "data", "kids_tunes.db");
+}
+
+function sendJson(response, statusCode, payload) {
+  response.writeHead(statusCode, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  response.end(JSON.stringify(payload, null, 2));
+}
+
+function sendHtml(response, html) {
+  response.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  response.end(html);
+}
+
+function redirect(response, location) {
+  response.writeHead(303, {
+    location,
+    "cache-control": "no-store",
+  });
+  response.end();
+}
+
+function notFound(response) {
+  sendJson(response, 404, { ok: false, error: "Not found" });
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function formatScanTime(value) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function readTextBody(request) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+
+    request.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 32_768) {
+        reject(new Error("Request body is too large"));
+        request.destroy();
+      }
+    });
+
+    request.on("end", () => resolve(body));
+    request.on("error", reject);
+  });
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+async function readPayload(request) {
+  const body = await readTextBody(request);
+  const contentType = request.headers["content-type"] || "";
+
+  if (contentType.includes("application/json")) {
+    try {
+      return body ? JSON.parse(body) : {};
+    } catch {
+      throw new Error("Request body must be valid JSON");
+    }
+  }
+
+  if (contentType.includes("application/x-www-form-urlencoded")) {
+    return Object.fromEntries(new URLSearchParams(body));
+  }
+
+  return body ? JSON.parse(body) : {};
+}
+
+function normalizeTagId(tagId) {
+  return typeof tagId === "string" ? tagId.trim().toUpperCase() : "";
+}
+
+function normalizeScan(payload) {
+  const readerId = typeof payload.reader_id === "string" ? payload.reader_id.trim() : "";
+  const tagId = normalizeTagId(payload.tag_id);
+  const source = typeof payload.source === "string" && payload.source.trim() ? payload.source.trim() : "api";
+
+  if (!readerId || readerId.length > 128) {
+    return { error: "reader_id is required and must be 128 characters or fewer" };
+  }
+
+  if (!tagId || tagId.length > 128) {
+    return { error: "tag_id is required and must be 128 characters or fewer" };
+  }
+
+  if (source.length > 64) {
+    return { error: "source must be 64 characters or fewer" };
+  }
+
+  return { readerId, tagId, source };
+}
+
+function normalizeCard(payload) {
+  const tagId = normalizeTagId(payload.tag_id);
+  const name = typeof payload.name === "string" ? payload.name.trim() : "";
+  const notes = typeof payload.notes === "string" ? payload.notes.trim() : "";
+
+  if (!tagId || tagId.length > 128) {
+    return { error: "tag_id is required and must be 128 characters or fewer" };
+  }
+
+  if (!name || name.length > 160) {
+    return { error: "name is required and must be 160 characters or fewer" };
+  }
+
+  if (notes.length > 500) {
+    return { error: "notes must be 500 characters or fewer" };
+  }
+
+  return { tagId, name, notes };
+}
+
+function normalizeEnabled(value) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    return value === 1;
+  }
+
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  return ["1", "true", "yes", "on", "enabled"].includes(value.trim().toLowerCase());
+}
+
+function normalizeAction(payload) {
+  const allowedTypes = getAllowedActionTypes();
+  const tagId = normalizeTagId(payload.tag_id);
+  const normalized = normalizeActionFields(payload, allowedTypes);
+
+  if (!tagId || tagId.length > 128) {
+    return { error: "tag_id is required and must be 128 characters or fewer" };
+  }
+
+  if (normalized.error) {
+    return normalized;
+  }
+
+  return { tagId, ...normalized };
+}
+
+function getAllowedActionTypes() {
+  return new Set([
+    "none",
+    "pretend_play",
+    "stop",
+    "sleep_timer",
+    "sonos_play",
+    "sonos_play_url",
+    "sonos_stop",
+    "spotify_play",
+    "spotify_pause",
+    "stop_all",
+  ]);
+}
+
+function normalizeActionFields(payload, allowedTypes = getAllowedActionTypes()) {
+  const actionType = typeof payload.action_type === "string" ? payload.action_type.trim() : "none";
+  const sonosTargetHost = normalizeSonosHost(payload.sonos_target_host || "");
+  const rawActionTarget = typeof payload.action_target === "string" ? payload.action_target.trim() : "";
+  const usesSonosTarget = (actionType === "sonos_play" || actionType === "sonos_stop" || actionType === "stop_all") && sonosTargetHost;
+  const actionTarget = usesSonosTarget ? sonosTargetHost : rawActionTarget;
+  const enabled = normalizeEnabled(payload.enabled);
+
+  if (!allowedTypes.has(actionType)) {
+    return { error: "action_type must be one of none, pretend_play, stop, sleep_timer, sonos_play, sonos_play_url, sonos_stop, spotify_play, spotify_pause, or stop_all" };
+  }
+
+  if (actionTarget.length > 500) {
+    return { error: "action_target must be 500 characters or fewer" };
+  }
+
+  if (actionType === "none" && enabled) {
+    return { actionType, actionTarget: "", enabled: false };
+  }
+
+  return { actionType, actionTarget, enabled };
+}
+
+function normalizeReceiver(payload) {
+  const readerId = typeof payload.reader_id === "string" ? payload.reader_id.trim() : "";
+  const name = typeof payload.name === "string" ? payload.name.trim() : "";
+  const childName = typeof payload.child_name === "string" ? payload.child_name.trim() : "";
+  const defaultSonosHost = normalizeSonosHost(payload.default_sonos_host || "");
+  const spotifyAccountLabel =
+    typeof payload.spotify_account_label === "string" ? payload.spotify_account_label.trim() : "";
+  const enabled = normalizeEnabled(payload.enabled ?? "1");
+
+  if (!readerId || readerId.length > 128) {
+    return { error: "reader_id is required and must be 128 characters or fewer" };
+  }
+
+  if (!name || name.length > 120) {
+    return { error: "name is required and must be 120 characters or fewer" };
+  }
+
+  if (childName.length > 120) {
+    return { error: "child_name must be 120 characters or fewer" };
+  }
+
+  if (defaultSonosHost.length > 255) {
+    return { error: "default_sonos_host must be 255 characters or fewer" };
+  }
+
+  if (spotifyAccountLabel.length > 160) {
+    return { error: "spotify_account_label must be 160 characters or fewer" };
+  }
+
+  return {
+    readerId,
+    name,
+    childName,
+    defaultSonosHost,
+    spotifyAccountLabel,
+    enabled,
+  };
+}
+
+function normalizeReceiverUpdate(payload) {
+  const receiver = normalizeReceiver(payload);
+  const id = Number(payload.id);
+
+  if (receiver.error) {
+    return receiver;
+  }
+
+  if (!Number.isInteger(id) || id < 1) {
+    return { error: "id is required" };
+  }
+
+  return { ...receiver, id };
+}
+
+function normalizeEspHomeSettings(payload) {
+  const host = normalizeSonosHost(payload.esphome_host || payload.host);
+  const readerId =
+    typeof payload.reader_id === "string" && payload.reader_id.trim()
+      ? payload.reader_id.trim()
+      : host;
+  const enabled = normalizeEnabled(payload.esphome_enabled);
+
+  if (!host || host.length > 255) {
+    return { error: "esphome_host is required and must be 255 characters or fewer" };
+  }
+
+  if (!readerId || readerId.length > 128) {
+    return { error: "reader_id is required and must be 128 characters or fewer" };
+  }
+
+  return { host, readerId, enabled };
+}
+
+function normalizeSonosHost(value) {
+  let host = typeof value === "string" ? value.trim() : "";
+
+  if (!host) {
+    return "";
+  }
+
+  host = host.replace(/^https?:\/\//i, "").split("/")[0].trim();
+  return host;
+}
+
+function normalizeSonosSettings(payload) {
+  const enabled = normalizeEnabled(payload.sonos_enabled);
+  return { enabled };
+}
+
+function normalizeSonosDevice(payload) {
+  const host = normalizeSonosHost(payload.host || payload.sonos_host);
+  const name = typeof payload.name === "string" && payload.name.trim() ? payload.name.trim() : host;
+  const enabled = normalizeEnabled(payload.enabled ?? "1");
+
+  if (!host || host.length > 255) {
+    return { error: "host is required and must be 255 characters or fewer" };
+  }
+
+  if (!name || name.length > 120) {
+    return { error: "name is required and must be 120 characters or fewer" };
+  }
+
+  return { host, name, enabled };
+}
+
+function normalizeSonosDeviceUpdate(payload) {
+  const device = normalizeSonosDevice(payload);
+  const id = Number(payload.id);
+
+  if (device.error) {
+    return device;
+  }
+
+  if (!Number.isInteger(id) || id < 1) {
+    return { error: "id is required" };
+  }
+
+  return { ...device, id };
+}
+
+function getSetting(key, fallback = "") {
+  const row = selectSetting.get(key);
+  return row ? row.value : fallback;
+}
+
+function setSetting(key, value) {
+  upsertSettingStatement.run(key, String(value), new Date().toISOString());
+}
+
+function getSonosSettings() {
+  return {
+    enabled: getSetting("sonos_enabled", "0") === "1",
+  };
+}
+
+function saveSonosSettings(settings) {
+  setSetting("sonos_enabled", settings.enabled ? "1" : "0");
+  return getSonosSettings();
+}
+
+function getEspHomeSettings() {
+  return {
+    host: getSetting("esphome_host", "192.168.5.28"),
+    reader_id: getSetting("esphome_reader_id", "tagreader-c6c6e4"),
+    enabled: getSetting("esphome_enabled", "0") === "1",
+  };
+}
+
+function saveEspHomeSettings(settings) {
+  setSetting("esphome_host", settings.host);
+  setSetting("esphome_reader_id", settings.readerId);
+  setSetting("esphome_enabled", settings.enabled ? "1" : "0");
+  return getEspHomeSettings();
+}
+
+function getReaderTestActionSettings() {
+  return {
+    enabled: getSetting("reader_test_enabled", "0") === "1",
+    reader_id: getSetting("reader_test_reader_id", getEspHomeSettings().reader_id),
+    action: {
+      type: getSetting("reader_test_action_type", "pretend_play"),
+      target: getSetting("reader_test_action_target", "Reader test trigger"),
+      enabled: true,
+    },
+  };
+}
+
+function normalizeReaderTestActionSettings(payload) {
+  const readerId =
+    typeof payload.reader_id === "string" && payload.reader_id.trim()
+      ? payload.reader_id.trim()
+      : getEspHomeSettings().reader_id;
+  const action = normalizeActionFields({
+    action_type: payload.action_type,
+    action_target: payload.action_target,
+    sonos_target_host: payload.sonos_target_host,
+    enabled: true,
+  });
+  const enabled = normalizeEnabled(payload.reader_test_enabled);
+
+  if (!readerId || readerId.length > 128) {
+    return { error: "reader_id is required and must be 128 characters or fewer" };
+  }
+
+  if (action.error) {
+    return action;
+  }
+
+  return {
+    enabled,
+    readerId,
+    actionType: action.actionType,
+    actionTarget: action.actionTarget,
+  };
+}
+
+function saveReaderTestActionSettings(settings) {
+  setSetting("reader_test_enabled", settings.enabled ? "1" : "0");
+  setSetting("reader_test_reader_id", settings.readerId);
+  setSetting("reader_test_action_type", settings.actionType);
+  setSetting("reader_test_action_target", settings.actionTarget);
+  return getReaderTestActionSettings();
+}
+
+function getSpotifyConfig() {
+  return {
+    clientId: process.env.SPOTIFY_CLIENT_ID || "",
+    clientSecret: process.env.SPOTIFY_CLIENT_SECRET || "",
+    redirectUri: SPOTIFY_REDIRECT_URI,
+  };
+}
+
+function getSpotifyTokens() {
+  return {
+    accessToken: getSetting("spotify_access_token", ""),
+    refreshToken: getSetting("spotify_refresh_token", ""),
+    expiresAt: Number(getSetting("spotify_expires_at", "0")) || 0,
+  };
+}
+
+function getSpotifyStatus() {
+  const config = getSpotifyConfig();
+  const tokens = getSpotifyTokens();
+
+  return {
+    configured: Boolean(config.clientId && config.clientSecret),
+    authorized: Boolean(tokens.refreshToken),
+    has_access_token: Boolean(tokens.accessToken),
+    expires_at: tokens.expiresAt ? new Date(tokens.expiresAt).toISOString() : "",
+    redirect_uri: config.redirectUri,
+    scopes: SPOTIFY_SCOPES,
+    default_device_id: getSetting("spotify_default_device_id", ""),
+    start_volume_percent: getSpotifyStartVolumePercent(),
+  };
+}
+
+function normalizeSpotifyVolumePercent(value, fallback = "") {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
+
+  const volumePercent = Number(value);
+
+  if (!Number.isInteger(volumePercent) || volumePercent < 0 || volumePercent > 100) {
+    return null;
+  }
+
+  return volumePercent;
+}
+
+function getSpotifyStartVolumePercent() {
+  const savedValue = getSetting("spotify_start_volume_percent", "30");
+  const volumePercent = normalizeSpotifyVolumePercent(savedValue, "");
+  return volumePercent === null ? 30 : volumePercent;
+}
+
+function normalizeSpotifyPlaybackSettings(payload) {
+  const defaultDeviceId =
+    typeof payload.default_device_id === "string" && payload.default_device_id.trim()
+      ? payload.default_device_id.trim()
+      : "";
+  const startVolumePercent = normalizeSpotifyVolumePercent(payload.start_volume_percent, "");
+
+  if (defaultDeviceId.length > 200) {
+    return { error: "default_device_id must be 200 characters or fewer" };
+  }
+
+  if (startVolumePercent === null) {
+    return { error: "start_volume_percent must be a whole number from 0 to 100, or blank" };
+  }
+
+  return { defaultDeviceId, startVolumePercent };
+}
+
+function saveSpotifyPlaybackSettings(settings) {
+  setSetting("spotify_default_device_id", settings.defaultDeviceId);
+  setSetting("spotify_start_volume_percent", settings.startVolumePercent === "" ? "" : String(settings.startVolumePercent));
+  return getSpotifyStatus();
+}
+
+function saveSpotifyTokenResponse(tokenResponse) {
+  if (tokenResponse.access_token) {
+    setSetting("spotify_access_token", tokenResponse.access_token);
+  }
+
+  if (tokenResponse.refresh_token) {
+    setSetting("spotify_refresh_token", tokenResponse.refresh_token);
+  }
+
+  if (tokenResponse.expires_in) {
+    setSetting("spotify_expires_at", String(Date.now() + Number(tokenResponse.expires_in) * 1000 - 60000));
+  }
+
+  return getSpotifyStatus();
+}
+
+function normalizeSpotifyUri(value) {
+  const raw = typeof value === "string" ? value.trim() : "";
+
+  if (!raw) {
+    return "";
+  }
+
+  if (/^spotify:(track|album|playlist|episode):[A-Za-z0-9]+$/.test(raw)) {
+    return raw;
+  }
+
+  try {
+    const url = new URL(raw);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const type = parts[0];
+    const id = parts[1];
+
+    if (url.hostname.endsWith("spotify.com") && ["track", "album", "playlist", "episode"].includes(type) && id) {
+      return `spotify:${type}:${id}`;
+    }
+  } catch {
+    return "";
+  }
+
+  return "";
+}
+
+function spotifyPlaybackBodyForUri(uri) {
+  if (uri.startsWith("spotify:track:") || uri.startsWith("spotify:episode:")) {
+    return { uris: [uri], position_ms: 0 };
+  }
+
+  if (uri.startsWith("spotify:album:") || uri.startsWith("spotify:playlist:")) {
+    return { context_uri: uri };
+  }
+
+  return null;
+}
+
+async function exchangeSpotifyCode(code) {
+  const config = getSpotifyConfig();
+
+  if (!config.clientId || !config.clientSecret) {
+    throw new Error("SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set before Spotify login");
+  }
+
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: config.redirectUri,
+  });
+
+  const response = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST",
+    headers: {
+      authorization: `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}`,
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(`Spotify token exchange failed with HTTP ${response.status}: ${JSON.stringify(payload).slice(0, 240)}`);
+  }
+
+  return saveSpotifyTokenResponse(payload);
+}
+
+async function refreshSpotifyAccessToken() {
+  const config = getSpotifyConfig();
+  const tokens = getSpotifyTokens();
+
+  if (!config.clientId || !config.clientSecret) {
+    throw new Error("SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set");
+  }
+
+  if (!tokens.refreshToken) {
+    throw new Error("Spotify is not authorized yet");
+  }
+
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: tokens.refreshToken,
+  });
+
+  const response = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST",
+    headers: {
+      authorization: `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}`,
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(`Spotify token refresh failed with HTTP ${response.status}: ${JSON.stringify(payload).slice(0, 240)}`);
+  }
+
+  saveSpotifyTokenResponse(payload);
+  return getSpotifyTokens().accessToken;
+}
+
+async function getSpotifyAccessToken() {
+  const tokens = getSpotifyTokens();
+
+  if (tokens.accessToken && tokens.expiresAt > Date.now()) {
+    return tokens.accessToken;
+  }
+
+  return refreshSpotifyAccessToken();
+}
+
+async function spotifyApiRequest(pathname, options = {}) {
+  const accessToken = await getSpotifyAccessToken();
+  const response = await fetch(`https://api.spotify.com/v1${pathname}`, {
+    method: options.method || "GET",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      ...(options.body ? { "content-type": "application/json" } : {}),
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+
+  if (response.status === 204) {
+    return { ok: true, status_code: response.status };
+  }
+
+  const text = await response.text();
+  let payload = {};
+
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { raw: text };
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(`Spotify API failed with HTTP ${response.status}: ${text.slice(0, 240)}`);
+  }
+
+  return {
+    ...payload,
+    ok: payload.ok ?? true,
+    status_code: response.status,
+  };
+}
+
+async function getSpotifyDevices() {
+  const payload = await spotifyApiRequest("/me/player/devices");
+  return payload.devices || [];
+}
+
+async function getSpotifyCurrentPlayback() {
+  return spotifyApiRequest("/me/player");
+}
+
+function getSpotifyActivePlayback() {
+  return {
+    tag_id: getSetting("spotify_active_tag_id", ""),
+    uri: getSetting("spotify_active_uri", ""),
+    device_id: getSetting("spotify_active_device_id", ""),
+    started_at: getSetting("spotify_active_started_at", ""),
+  };
+}
+
+function setSpotifyActivePlayback(tagId, uri, deviceId) {
+  setSetting("spotify_active_tag_id", tagId);
+  setSetting("spotify_active_uri", uri);
+  setSetting("spotify_active_device_id", deviceId || "");
+  setSetting("spotify_active_started_at", new Date().toISOString());
+}
+
+function clearSpotifyActivePlayback() {
+  setSetting("spotify_active_tag_id", "");
+  setSetting("spotify_active_uri", "");
+  setSetting("spotify_active_device_id", "");
+  setSetting("spotify_active_started_at", "");
+}
+
+function isRecentSpotifyActivePlayback(activePlayback) {
+  if (!activePlayback.started_at) {
+    return false;
+  }
+
+  const startedAt = Date.parse(activePlayback.started_at);
+
+  if (!Number.isFinite(startedAt)) {
+    return false;
+  }
+
+  const maxActiveAgeMs = 6 * 60 * 60 * 1000;
+  return Date.now() - startedAt < maxActiveAgeMs;
+}
+
+async function shouldPauseActiveSpotifyCard(scan, uri) {
+  const activePlayback = getSpotifyActivePlayback();
+
+  if (
+    activePlayback.tag_id !== scan.tagId ||
+    activePlayback.uri !== uri ||
+    !isRecentSpotifyActivePlayback(activePlayback)
+  ) {
+    return false;
+  }
+
+  try {
+    const playback = await getSpotifyCurrentPlayback();
+
+    if (playback && playback.status_code !== 204 && playback.is_playing === false) {
+      clearSpotifyActivePlayback();
+      return false;
+    }
+  } catch {
+    // Echo devices do not always report rich playback state; keep the local toggle useful.
+  }
+
+  return true;
+}
+
+async function isSpotifyPlayingUri(uri) {
+  const playback = await getSpotifyCurrentPlayback();
+
+  if (!playback || playback.status_code === 204 || !playback.is_playing) {
+    return false;
+  }
+
+  const itemUri = playback.item && playback.item.uri ? playback.item.uri : "";
+  const contextUri = playback.context && playback.context.uri ? playback.context.uri : "";
+  return itemUri === uri || contextUri === uri;
+}
+
+function spotifyPlaybackMatchesRequest(playback, uri, deviceId) {
+  if (!playback || playback.status_code === 204 || !playback.is_playing) {
+    return false;
+  }
+
+  if (deviceId && playback.device && playback.device.id && playback.device.id !== deviceId) {
+    return false;
+  }
+
+  const itemUri = playback.item && playback.item.uri ? playback.item.uri : "";
+  const contextUri = playback.context && playback.context.uri ? playback.context.uri : "";
+
+  if (itemUri || contextUri) {
+    return itemUri === uri || contextUri === uri;
+  }
+
+  // Some Echo sessions report only "playing" and the active device for a moment after wake-up.
+  return true;
+}
+
+function summarizeSpotifyPlayback(playback) {
+  if (!playback) {
+    return "Spotify did not return playback state";
+  }
+
+  if (playback.status_code === 204) {
+    return "Spotify reported no active playback session";
+  }
+
+  const deviceName = playback.device && playback.device.name ? playback.device.name : "unknown device";
+  const playingState = playback.is_playing ? "playing" : "paused";
+  const itemName = playback.item && playback.item.name ? ` (${playback.item.name})` : "";
+  return `Spotify reported ${playingState} on ${deviceName}${itemName}`;
+}
+
+async function waitForSpotifyPlaybackStart(uri, deviceId) {
+  let lastPlayback = null;
+
+  for (let check = 0; check < 8; check += 1) {
+    await wait(500);
+    lastPlayback = await getSpotifyCurrentPlayback();
+
+    if (spotifyPlaybackMatchesRequest(lastPlayback, uri, deviceId)) {
+      return { ok: true, playback: lastPlayback };
+    }
+  }
+
+  return { ok: false, playback: lastPlayback };
+}
+
+async function sendSpotifyPlay(uriOrUrl, deviceId = getSetting("spotify_default_device_id", "")) {
+  const uri = normalizeSpotifyUri(uriOrUrl);
+  const body = spotifyPlaybackBodyForUri(uri);
+  const startVolumePercent = getSpotifyStartVolumePercent();
+
+  if (!body) {
+    throw new Error("Spotify playback needs a Spotify track, album, playlist, or episode URI/URL");
+  }
+
+  const playbackPath = deviceId ? `/me/player/play?device_id=${encodeURIComponent(deviceId)}` : "/me/player/play";
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    if (deviceId) {
+      await sendSpotifyTransferPlayback(deviceId);
+      await wait(1000);
+    }
+
+    if (startVolumePercent !== "") {
+      await sendSpotifySetVolume(startVolumePercent, deviceId);
+      await wait(250);
+    }
+
+    await spotifyApiRequest(playbackPath, {
+      method: "PUT",
+      body,
+    });
+
+    const verification = await waitForSpotifyPlaybackStart(uri, deviceId);
+
+    if (verification.ok) {
+      return {
+        ok: true,
+        uri,
+        device_id: deviceId,
+        start_volume_percent: startVolumePercent,
+        verified: true,
+        retry_count: attempt - 1,
+      };
+    }
+  }
+
+  const playback = await getSpotifyCurrentPlayback().catch(() => null);
+  throw new Error(`Spotify accepted the play command, but playback did not start. ${summarizeSpotifyPlayback(playback)}.`);
+}
+
+async function sendSpotifyTransferPlayback(deviceId, play = false) {
+  if (!deviceId) {
+    return { ok: true, device_id: "" };
+  }
+
+  await spotifyApiRequest("/me/player", {
+    method: "PUT",
+    body: {
+      device_ids: [deviceId],
+      play,
+    },
+  });
+
+  return { ok: true, device_id: deviceId };
+}
+
+async function sendSpotifySetVolume(volumePercent, deviceId = getSetting("spotify_default_device_id", "")) {
+  const normalizedVolume = normalizeSpotifyVolumePercent(volumePercent);
+
+  if (normalizedVolume === null || normalizedVolume === "") {
+    throw new Error("Spotify volume must be a whole number from 0 to 100");
+  }
+
+  const volumePath =
+    `/me/player/volume?volume_percent=${encodeURIComponent(normalizedVolume)}` +
+    (deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : "");
+
+  await spotifyApiRequest(volumePath, {
+    method: "PUT",
+  });
+
+  return { ok: true, volume_percent: normalizedVolume, device_id: deviceId };
+}
+
+async function sendSpotifyPause(deviceId = getSetting("spotify_default_device_id", "")) {
+  const pausePath = deviceId ? `/me/player/pause?device_id=${encodeURIComponent(deviceId)}` : "/me/player/pause";
+
+  await spotifyApiRequest(pausePath, {
+    method: "PUT",
+  });
+
+  return { ok: true, device_id: deviceId };
+}
+
+// A restart should not make the next card scan look like a second tap.
+clearSpotifyActivePlayback();
+
+function shapeSonosDevice(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    host: row.host,
+    enabled: Boolean(row.enabled),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function getSonosDevices() {
+  return selectSonosDevices.all().map(shapeSonosDevice);
+}
+
+function getSonosDeviceByHost(host) {
+  const device = selectSonosDeviceByHost.get(normalizeSonosHost(host));
+  return device ? shapeSonosDevice(device) : null;
+}
+
+function upsertSonosDevice(device) {
+  const now = new Date().toISOString();
+  upsertSonosDeviceStatement.run(device.name, device.host, device.enabled ? 1 : 0, now, now);
+  return getSonosDeviceByHost(device.host);
+}
+
+function updateSonosDevice(device) {
+  updateSonosDeviceByIdStatement.run(
+    device.name,
+    device.host,
+    device.enabled ? 1 : 0,
+    new Date().toISOString(),
+    device.id,
+  );
+  return getSonosDeviceByHost(device.host);
+}
+
+function resolveSonosDeviceForTest(payload) {
+  const requestedHost = normalizeSonosHost(payload.host || payload.sonos_host || payload.device_host);
+
+  if (requestedHost) {
+    return getSonosDeviceByHost(requestedHost);
+  }
+
+  const enabledDevices = getSonosDevices().filter((device) => device.enabled);
+  return enabledDevices.length === 1 ? enabledDevices[0] : null;
+}
+
+function shapeReceiver(row) {
+  return {
+    id: row.id,
+    reader_id: row.reader_id,
+    name: row.name,
+    child_name: row.child_name,
+    default_sonos_host: row.default_sonos_host,
+    spotify_account_label: row.spotify_account_label,
+    enabled: Boolean(row.enabled),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function getReceivers() {
+  return selectReceivers.all().map(shapeReceiver);
+}
+
+function getReceiver(readerId) {
+  const receiver = selectReceiverByReaderId.get(readerId);
+  return receiver ? shapeReceiver(receiver) : null;
+}
+
+function upsertReceiver(receiver) {
+  const now = new Date().toISOString();
+  upsertReceiverStatement.run(
+    receiver.readerId,
+    receiver.name,
+    receiver.childName,
+    receiver.defaultSonosHost,
+    receiver.spotifyAccountLabel,
+    receiver.enabled ? 1 : 0,
+    now,
+    now,
+  );
+  return getReceiver(receiver.readerId);
+}
+
+function updateReceiver(receiver) {
+  updateReceiverByIdStatement.run(
+    receiver.readerId,
+    receiver.name,
+    receiver.childName,
+    receiver.defaultSonosHost,
+    receiver.spotifyAccountLabel,
+    receiver.enabled ? 1 : 0,
+    new Date().toISOString(),
+    receiver.id,
+  );
+  return getReceiver(receiver.readerId);
+}
+
+function resolveSonosTarget(actionTarget, receiver) {
+  if (actionTarget === "__receiver_default__") {
+    return {
+      host: receiver ? normalizeSonosHost(receiver.default_sonos_host) : "",
+      source: "receiver_default",
+    };
+  }
+
+  return {
+    host: normalizeSonosHost(actionTarget),
+    source: "action_target",
+  };
+}
+
+function stripAnsi(value) {
+  return String(value || "").replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function rememberEspHomeLog(message) {
+  const cleanMessage = stripAnsi(message).trim();
+
+  if (!cleanMessage) {
+    return;
+  }
+
+  espHomeBridge.lastLog = cleanMessage;
+  espHomeBridge.logHistory = [
+    {
+      at: new Date().toISOString(),
+      message: cleanMessage,
+    },
+    ...espHomeBridge.logHistory,
+  ].slice(0, 20);
+}
+
+function parseTagIdFromEspHomeLog(message) {
+  const text = stripAnsi(message).toUpperCase();
+  const candidates = text.match(/\b[0-9A-F]{2}(?:[-:][0-9A-F]{2}){3,}\b/g) || [];
+  return candidates.length ? candidates[0].replaceAll(":", "-") : "";
+}
+
+function homeAssistantMapToObject(entries) {
+  const output = {};
+
+  for (const entry of entries || []) {
+    const key = typeof entry.getKey === "function" ? entry.getKey() : entry.key;
+    const value = typeof entry.getValue === "function" ? entry.getValue() : entry.value;
+
+    if (key) {
+      output[key] = value || "";
+    }
+  }
+
+  return output;
+}
+
+function getHomeAssistantServicePayload(message) {
+  const objectPayload = typeof message.toObject === "function" ? message.toObject(false) : message || {};
+  const service =
+    typeof message.getService === "function"
+      ? message.getService()
+      : objectPayload.service || objectPayload.serviceName || "";
+  const isEvent =
+    typeof message.getIsEvent === "function"
+      ? message.getIsEvent()
+      : Boolean(objectPayload.isEvent || objectPayload.is_event);
+  const dataEntries =
+    typeof message.getDataList === "function" ? message.getDataList() : objectPayload.dataList || objectPayload.data || [];
+  const dataTemplateEntries =
+    typeof message.getDataTemplateList === "function"
+      ? message.getDataTemplateList()
+      : objectPayload.dataTemplateList || objectPayload.data_template || [];
+  const variableEntries =
+    typeof message.getVariablesList === "function"
+      ? message.getVariablesList()
+      : objectPayload.variablesList || objectPayload.variables || [];
+
+  return {
+    service,
+    isEvent,
+    data: homeAssistantMapToObject(dataEntries),
+    dataTemplate: homeAssistantMapToObject(dataTemplateEntries),
+    variables: homeAssistantMapToObject(variableEntries),
+    raw: objectPayload,
+  };
+}
+
+function summarizeHomeAssistantService(message) {
+  const payload = getHomeAssistantServicePayload(message);
+  const values = [
+    ...Object.entries(payload.data),
+    ...Object.entries(payload.dataTemplate),
+    ...Object.entries(payload.variables),
+  ]
+    .map(([key, value]) => `${key}=${value}`)
+    .join(", ");
+  const type = payload.isEvent ? "HA event" : "HA service";
+  const service = payload.service || "unknown";
+
+  if (values) {
+    return `${type} ${service}: ${values}`;
+  }
+
+  return `${type} ${service}: ${JSON.stringify(payload.raw)}`;
+}
+
+function parseTagIdFromHomeAssistantService(message) {
+  const payload = getHomeAssistantServicePayload(message);
+  return parseTagIdFromEspHomeLog(JSON.stringify(payload));
+}
+
+async function recordEspHomeTag(settings, tagId) {
+  const now = Date.now();
+  const recentKey = `${settings.reader_id}:${tagId}`;
+  const lastSeen = espHomeBridge.recentTags.get(recentKey) || 0;
+
+  if (now - lastSeen < ESPHOME_SCAN_DEBOUNCE_MS) {
+    return;
+  }
+
+  espHomeBridge.recentTags.set(recentKey, now);
+  espHomeBridge.lastTagId = tagId;
+  espHomeBridge.lastScanAt = new Date().toISOString();
+
+  try {
+    await createScan({
+      readerId: settings.reader_id,
+      tagId,
+      source: "esphome",
+    });
+  } catch (error) {
+    espHomeBridge.status = "error";
+    espHomeBridge.lastError = error.message;
+  }
+}
+
+function getEspHomeBridgeStatus() {
+  const { connection, recentTags, ...status } = espHomeBridge;
+  return status;
+}
+
+function stopEspHomeBridge() {
+  if (espHomeBridge.connection) {
+    try {
+      espHomeBridge.connection.disconnect();
+    } catch {
+      // Ignore disconnect errors from already-closed ESPHome sockets.
+    }
+  }
+
+  espHomeBridge.connection = null;
+  espHomeBridge.status = "disabled";
+}
+
+async function muteEspHomeBuzzer(connection) {
+  try {
+    connection.switchCommandService({
+      key: TAGREADER_BUZZER_SWITCH_KEY,
+      state: false,
+    });
+    rememberEspHomeLog("Sent TagReader Buzzer Enabled = OFF");
+  } catch (error) {
+    rememberEspHomeLog(`Could not mute TagReader buzzer: ${error.message}`);
+  }
+}
+
+function startEspHomeBridge(settings = getEspHomeSettings()) {
+  stopEspHomeBridge();
+
+  if (!settings.enabled) {
+    espHomeBridge.status = "disabled";
+    return;
+  }
+
+  const connection = new EspHomeConnection({
+    host: settings.host,
+    port: 6053,
+    reconnect: true,
+    clientInfo: "kids-tunes",
+  });
+
+  espHomeBridge.connection = connection;
+  espHomeBridge.status = "connecting";
+  espHomeBridge.lastError = "";
+  espHomeBridge.lastLog = "";
+  espHomeBridge.lastTagId = "";
+  espHomeBridge.lastScanAt = "";
+  espHomeBridge.logHistory = [];
+  espHomeBridge.startedAt = new Date().toISOString();
+
+  connection.on("authorized", async () => {
+    espHomeBridge.status = "connected";
+    espHomeBridge.lastError = "";
+    try {
+      await muteEspHomeBuzzer(connection);
+      await connection.subscribeLogsService(4, false);
+      connection.sendMessage(new EspHomePb.SubscribeHomeassistantServicesRequest());
+    } catch (error) {
+      espHomeBridge.status = "error";
+      espHomeBridge.lastError = error.message;
+    }
+  });
+
+  connection.on("message.SubscribeLogsResponse", async (log) => {
+    const logMessage = `${log.tag || ""} ${log.message || ""}`.trim();
+    rememberEspHomeLog(logMessage);
+    const tagId = parseTagIdFromEspHomeLog(logMessage);
+
+    if (!tagId) {
+      return;
+    }
+
+    await recordEspHomeTag(settings, tagId);
+  });
+
+  connection.on("message.HomeassistantServiceResponse", async (service) => {
+    rememberEspHomeLog(summarizeHomeAssistantService(service));
+    const tagId = parseTagIdFromHomeAssistantService(service);
+
+    if (tagId) {
+      await recordEspHomeTag(settings, tagId);
+    }
+  });
+
+  connection.on("socketDisconnected", () => {
+    if (espHomeBridge.connection === connection && espHomeBridge.status !== "disabled") {
+      espHomeBridge.status = "disconnected";
+    }
+  });
+
+  connection.on("error", (error) => {
+    if (espHomeBridge.connection === connection) {
+      espHomeBridge.status = "error";
+      espHomeBridge.lastError = error.message;
+    }
+  });
+
+  connection.connect();
+}
+
+function sonosCommandForAction(action) {
+  if (action.type === "stop" || action.type === "sonos_stop" || action.type === "stop_all") {
+    return "Stop";
+  }
+
+  if (action.type === "sonos_play") {
+    return "Play";
+  }
+
+  return null;
+}
+
+async function sendSonosTransportCommand(host, command) {
+  const bodyContent = `
+      <InstanceID>0</InstanceID>
+      ${command === "Play" ? "<Speed>1</Speed>" : ""}`;
+  const result = await sendSonosSoapCommand(host, command, bodyContent);
+  return { ...result, command };
+}
+
+function escapeXml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function getSonosControlUrl(host) {
+  const controlHost = host.includes(":") ? host : `${host}:1400`;
+  return `http://${controlHost}/MediaRenderer/AVTransport/Control`;
+}
+
+async function sendSonosSoapCommand(host, action, bodyContent) {
+  const controlUrl = getSonosControlUrl(host);
+  const soapBody = `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:${action} xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+      ${bodyContent}
+    </u:${action}>
+  </s:Body>
+</s:Envelope>`;
+
+  let response;
+
+  try {
+    response = await fetch(controlUrl, {
+      method: "POST",
+      headers: {
+        "content-type": 'text/xml; charset="utf-8"',
+        soapaction: `"urn:schemas-upnp-org:service:AVTransport:1#${action}"`,
+      },
+      body: soapBody,
+      signal: AbortSignal.timeout(4500),
+    });
+  } catch (error) {
+    const detail = error.cause?.code || error.cause?.message || error.message;
+    throw new Error(`Sonos ${action} could not reach ${controlUrl}: ${detail}`);
+  }
+
+  const responseText = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Sonos ${action} failed with HTTP ${response.status}: ${responseText.slice(0, 160)}`);
+  }
+
+  return {
+    command: action,
+    status_code: response.status,
+  };
+}
+
+function normalizeMediaUrl(value) {
+  const mediaUrl = typeof value === "string" ? value.trim() : "";
+
+  if (!mediaUrl) {
+    return "";
+  }
+
+  try {
+    const url = new URL(mediaUrl);
+    return ["http:", "https:"].includes(url.protocol) ? url.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+async function sendSonosPlayUrl(host, mediaUrl) {
+  const normalizedUrl = normalizeMediaUrl(mediaUrl);
+
+  if (!normalizedUrl) {
+    throw new Error("Sonos URL playback needs an http or https media URL");
+  }
+
+  await sendSonosSoapCommand(
+    host,
+    "SetAVTransportURI",
+    `
+      <InstanceID>0</InstanceID>
+      <CurrentURI>${escapeXml(normalizedUrl)}</CurrentURI>
+      <CurrentURIMetaData></CurrentURIMetaData>`,
+  );
+  await sendSonosTransportCommand(host, "Play");
+
+  return {
+    command: "SetAVTransportURI+Play",
+    status_code: 200,
+    media_url: normalizedUrl,
+  };
+}
+
+async function createScan(scan) {
+  const scannedAt = new Date().toISOString();
+  const result = insertScan.run(scan.readerId, scan.tagId, scan.source, scannedAt);
+  const scanId = Number(result.lastInsertRowid);
+  const card = getCard(scan.tagId);
+  const receiver = getReceiver(scan.readerId);
+  const actionEvent = await maybeCreateActionEvent(scanId, scan, card, receiver);
+
+  return {
+    id: scanId,
+    reader_id: scan.readerId,
+    tag_id: scan.tagId,
+    source: scan.source,
+    scanned_at: scannedAt,
+    known: Boolean(card),
+    card,
+    receiver,
+    action_event: actionEvent,
+  };
+}
+
+function upsertCard(card) {
+  const now = new Date().toISOString();
+  upsertCardStatement.run(card.tagId, card.name, card.notes, now, now);
+  return getCard(card.tagId);
+}
+
+function getCard(tagId) {
+  const card = selectCardByTag.get(normalizeTagId(tagId));
+  return card ? shapeCard(card) : null;
+}
+
+function getCards(limit = 100) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  return selectCards.all(safeLimit).map(shapeCard);
+}
+
+function getAction(tagId) {
+  const action = selectActionByTag.get(normalizeTagId(tagId));
+  return action ? shapeAction(action) : null;
+}
+
+function upsertAction(action) {
+  if (!getCard(action.tagId)) {
+    return { error: "Cannot assign an action before the card exists" };
+  }
+
+  const now = new Date().toISOString();
+  upsertActionStatement.run(
+    action.tagId,
+    action.actionType,
+    action.actionTarget,
+    action.enabled ? 1 : 0,
+    now,
+    now,
+  );
+  return getAction(action.tagId);
+}
+
+async function maybeCreateActionEvent(scanId, scan, card, receiver) {
+  const actionCard = card || getReaderTestActionCard(scan);
+
+  if (!actionCard || !actionCard.action.enabled || actionCard.action.type === "none") {
+    return null;
+  }
+
+  const createdAt = new Date().toISOString();
+  const sonosCommand = sonosCommandForAction(actionCard.action);
+  let eventActionType = actionCard.action.type;
+  let eventActionTarget = actionCard.action.target;
+  let status = "would_run";
+  let message = actionCard.test_action ? `Reader test action would run ${actionCard.action.type}` : `Would run ${actionCard.action.type}`;
+
+  if (actionCard.action.type === "spotify_pause") {
+    try {
+      const result = await sendSpotifyPause();
+      clearSpotifyActivePlayback();
+      status = "sent";
+      message = result.device_id
+        ? `Paused Spotify playback on default device`
+        : "Paused Spotify playback";
+    } catch (error) {
+      status = "failed";
+      message = error.message;
+    }
+
+    if (actionCard.test_action) {
+      message = `Reader test action: ${message}`;
+    }
+  }
+
+  if (actionCard.action.type === "spotify_play") {
+    try {
+      const uri = normalizeSpotifyUri(actionCard.action.target);
+      const shouldPause =
+        !actionCard.test_action &&
+        uri &&
+        (await shouldPauseActiveSpotifyCard(scan, uri));
+
+      if (shouldPause) {
+        const result = await sendSpotifyPause();
+        clearSpotifyActivePlayback();
+        eventActionType = "spotify_pause";
+        status = "sent";
+        message = result.device_id
+          ? `Paused Spotify playback for ${uri} after second scan`
+          : `Paused Spotify playback for ${uri} after second scan`;
+      } else {
+        const result = await sendSpotifyPlay(actionCard.action.target);
+        setSpotifyActivePlayback(scan.tagId, result.uri, result.device_id);
+        status = "sent";
+        message =
+          result.start_volume_percent === ""
+            ? `Verified Spotify playback from beginning for ${result.uri}`
+            : `Set Spotify volume to ${result.start_volume_percent}% and verified ${result.uri} from beginning`;
+
+        if (result.retry_count > 0) {
+          message += ` after ${result.retry_count} retry`;
+        }
+      }
+    } catch (error) {
+      status = "failed";
+      message = error.message;
+    }
+
+    if (actionCard.test_action) {
+      message = `Reader test action: ${message}`;
+    }
+  }
+
+  if (actionCard.action.type === "sonos_play_url") {
+    const settings = getSonosSettings();
+    const mediaUrl = normalizeMediaUrl(actionCard.action.target);
+    const resolvedTarget = resolveSonosTarget("__receiver_default__", receiver);
+    const targetHost = resolvedTarget.host;
+    const targetDevice = targetHost ? getSonosDeviceByHost(targetHost) : null;
+
+    if (!mediaUrl) {
+      status = "failed";
+      message = "Sonos URL playback needs an http or https media URL";
+    } else if (!settings.enabled) {
+      message = `Sonos disabled; would play URL on receiver default: ${mediaUrl}`;
+    } else if (!targetHost) {
+      status = "failed";
+      message = "Sonos URL playback not sent because this receiver has no default speaker";
+    } else if (!targetDevice) {
+      status = "failed";
+      message = `Sonos URL playback not sent because ${targetHost} is not in the device list`;
+    } else if (!targetDevice.enabled) {
+      status = "failed";
+      message = `Sonos URL playback not sent because ${targetDevice.name} is disabled`;
+    } else {
+      try {
+        await sendSonosPlayUrl(targetDevice.host, mediaUrl);
+        status = "sent";
+        message = `Sent Sonos URL playback to ${targetDevice.name} via receiver default`;
+      } catch (error) {
+        status = "failed";
+        message = error.message;
+      }
+    }
+
+    if (actionCard.test_action) {
+      message = `Reader test action: ${message}`;
+    }
+  }
+
+  if (sonosCommand) {
+    const settings = getSonosSettings();
+    const resolvedTarget = resolveSonosTarget(actionCard.action.target, receiver);
+    const targetHost = resolvedTarget.host;
+    const targetDevice = targetHost ? getSonosDeviceByHost(targetHost) : null;
+
+    if (!settings.enabled) {
+      message =
+        resolvedTarget.source === "receiver_default"
+          ? `Sonos disabled; would send ${sonosCommand} to receiver default`
+          : `Sonos disabled; would send ${sonosCommand}`;
+      if (actionCard.test_action) {
+        message = `Reader test action: ${message}`;
+      }
+      if (actionCard.action.type === "stop_all") {
+        message += "; Spotify pause is not configured yet";
+      }
+    } else if (!targetHost) {
+      status = "failed";
+      message =
+        resolvedTarget.source === "receiver_default"
+          ? `Sonos ${sonosCommand} not sent because this receiver has no default speaker`
+          : `Sonos ${sonosCommand} not sent because this action has no target speaker`;
+      if (actionCard.test_action) {
+        message = `Reader test action: ${message}`;
+      }
+      if (actionCard.action.type === "stop_all") {
+        message += "; Spotify pause is not configured yet";
+      }
+    } else if (!targetDevice) {
+      status = "failed";
+      message = `Sonos ${sonosCommand} not sent because ${targetHost} is not in the device list`;
+      if (actionCard.test_action) {
+        message = `Reader test action: ${message}`;
+      }
+      if (actionCard.action.type === "stop_all") {
+        message += "; Spotify pause is not configured yet";
+      }
+    } else if (!targetDevice.enabled) {
+      status = "failed";
+      message = `Sonos ${sonosCommand} not sent because ${targetDevice.name} is disabled`;
+      if (actionCard.test_action) {
+        message = `Reader test action: ${message}`;
+      }
+      if (actionCard.action.type === "stop_all") {
+        message += "; Spotify pause is not configured yet";
+      }
+    } else {
+      try {
+        await sendSonosTransportCommand(targetDevice.host, sonosCommand);
+        status = actionCard.action.type === "stop_all" ? "partial" : "sent";
+        message =
+          resolvedTarget.source === "receiver_default"
+            ? `Sent Sonos ${sonosCommand} to ${targetDevice.name} via receiver default`
+            : `Sent Sonos ${sonosCommand} to ${targetDevice.name}`;
+        if (actionCard.test_action) {
+          message = `Reader test action: ${message}`;
+        }
+        if (actionCard.action.type === "stop_all") {
+          message += "; Spotify pause is not configured yet";
+        }
+      } catch (error) {
+        status = "failed";
+        message = error.message;
+        if (actionCard.test_action) {
+          message = `Reader test action: ${message}`;
+        }
+        if (actionCard.action.type === "stop_all") {
+          message += "; Spotify pause is not configured yet";
+        }
+      }
+    }
+  }
+
+  const result = insertActionEvent.run(
+    scanId,
+    scan.tagId,
+    eventActionType,
+    eventActionTarget,
+    status,
+    message,
+    createdAt,
+  );
+
+  return {
+    id: Number(result.lastInsertRowid),
+    scan_id: scanId,
+    tag_id: scan.tagId,
+    action_type: eventActionType,
+    action_target: eventActionTarget,
+    status,
+    message,
+    created_at: createdAt,
+  };
+}
+
+function getReaderTestActionCard(scan) {
+  if (scan.source !== "esphome") {
+    return null;
+  }
+
+  const settings = getReaderTestActionSettings();
+
+  if (!settings.enabled || settings.reader_id !== scan.readerId) {
+    return null;
+  }
+
+  return {
+    test_action: true,
+    name: "Reader test action",
+    action: settings.action,
+  };
+}
+
+function shapeAction(row) {
+  return {
+    id: row.id,
+    tag_id: row.tag_id,
+    type: row.action_type,
+    target: row.action_target,
+    enabled: Boolean(row.enabled),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function shapeCard(row) {
+  return {
+    id: row.id,
+    tag_id: row.tag_id,
+    name: row.name,
+    notes: row.notes,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    action: {
+      type: row.action_type || "none",
+      target: row.action_target || "",
+      enabled: Boolean(row.action_enabled),
+    },
+  };
+}
+
+function shapeActionEvent(row) {
+  return {
+    id: row.id,
+    scan_id: row.scan_id,
+    tag_id: row.tag_id,
+    action_type: row.action_type,
+    action_target: row.action_target,
+    status: row.status,
+    message: row.message,
+    created_at: row.created_at,
+  };
+}
+
+function getActionEvents(limit = 20) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 200);
+  return selectActionEvents.all(safeLimit).map(shapeActionEvent);
+}
+
+function shapeScan(row) {
+  const card = row.card_id
+    ? {
+        id: row.card_id,
+        tag_id: row.tag_id,
+        name: row.card_name,
+        notes: row.card_notes,
+        action: {
+          type: row.configured_action_type || "none",
+          target: row.configured_action_target || "",
+          enabled: Boolean(row.configured_action_enabled),
+        },
+      }
+    : null;
+
+  const actionEvent = row.action_event_id
+    ? {
+        id: row.action_event_id,
+        scan_id: row.id,
+        tag_id: row.tag_id,
+        action_type: row.action_event_type,
+        action_target: row.action_event_target,
+        status: row.action_event_status,
+        message: row.action_event_message,
+        created_at: row.action_event_created_at,
+      }
+    : null;
+
+  const receiver = row.receiver_id
+    ? {
+        id: row.receiver_id,
+        reader_id: row.reader_id,
+        name: row.receiver_name,
+        child_name: row.receiver_child_name,
+        default_sonos_host: row.receiver_default_sonos_host,
+        spotify_account_label: row.receiver_spotify_account_label,
+        enabled: Boolean(row.receiver_enabled),
+      }
+    : null;
+
+  return {
+    id: row.id,
+    reader_id: row.reader_id,
+    tag_id: row.tag_id,
+    source: row.source,
+    scanned_at: row.scanned_at,
+    known: Boolean(row.card_id),
+    card,
+    receiver,
+    action_event: actionEvent,
+  };
+}
+
+function getRecentScans(limit = 50) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 500);
+  return selectScans.all(safeLimit).map(shapeScan);
+}
+
+function renderCardForm(scan) {
+  const cardName = scan.card ? scan.card.name : "";
+  const cardNotes = scan.card ? scan.card.notes : "";
+  const buttonLabel = scan.known ? "Update" : "Assign";
+
+  return `
+    <form class="assign-form" method="post" action="/cards">
+      <input type="hidden" name="tag_id" value="${escapeHtml(scan.tag_id)}">
+      <label>
+        <span>Name</span>
+        <input name="name" value="${escapeHtml(cardName)}" placeholder="Card name" required maxlength="160">
+      </label>
+      <label>
+        <span>Notes</span>
+        <input name="notes" value="${escapeHtml(cardNotes)}" placeholder="Optional" maxlength="500">
+      </label>
+      <button type="submit">${buttonLabel}</button>
+    </form>
+  `;
+}
+
+function renderActionSummary(scan) {
+  if (scan.action_event) {
+    return `
+      <span class="action-status">${escapeHtml(scan.action_event.status)}</span>
+      <span class="small-text">${escapeHtml(scan.action_event.action_type)}</span>
+    `;
+  }
+
+  if (!scan.known) {
+    return `<span class="muted small-text">No action for unknown tags</span>`;
+  }
+
+  if (scan.card.action.enabled && scan.card.action.type !== "none") {
+    return `<span class="muted small-text">Ready: ${escapeHtml(scan.card.action.type)}</span>`;
+  }
+
+  return `<span class="muted small-text">No action configured</span>`;
+}
+
+function renderActionTypeOptions(selectedType) {
+  const options = [
+    ["none", "None"],
+    ["pretend_play", "Pretend play"],
+    ["stop", "Stop"],
+    ["sleep_timer", "Sleep timer"],
+    ["sonos_play", "Sonos play"],
+    ["sonos_play_url", "Sonos play URL"],
+    ["sonos_stop", "Sonos stop"],
+    ["spotify_play", "Spotify play"],
+    ["spotify_pause", "Spotify pause"],
+    ["stop_all", "Stop all"],
+  ];
+
+  return options
+    .map(([value, label]) => {
+      const selected = value === selectedType ? " selected" : "";
+      return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(label)}</option>`;
+    })
+    .join("");
+}
+
+function renderSonosDeviceOptions(devices, selectedHost) {
+  const options = [
+    `<option value="">Choose speaker</option>`,
+    `<option value="__receiver_default__"${selectedHost === "__receiver_default__" ? " selected" : ""}>Receiver default speaker</option>`,
+  ]
+    .concat(
+      devices.map((device) => {
+        const selected = device.host === selectedHost ? " selected" : "";
+        const disabled = device.enabled ? "" : " disabled";
+        return `<option value="${escapeHtml(device.host)}"${selected}${disabled}>${escapeHtml(device.name)} (${escapeHtml(device.host)})</option>`;
+      }),
+    );
+
+  return options.join("");
+}
+
+function renderReceiverOptions(receivers, selectedReaderId = "") {
+  const options = [`<option value="">UI test receiver</option>`].concat(
+    receivers.map((receiver) => {
+      const selected = receiver.reader_id === selectedReaderId ? " selected" : "";
+      const disabled = receiver.enabled ? "" : " disabled";
+      return `<option value="${escapeHtml(receiver.reader_id)}"${selected}${disabled}>${escapeHtml(receiver.name)} (${escapeHtml(receiver.reader_id)})</option>`;
+    }),
+  );
+
+  return options.join("");
+}
+
+function renderActionForm(card, sonosDevices) {
+  const checked = card.action.enabled ? " checked" : "";
+  const usesSonosTarget = card.action.type === "sonos_play" || card.action.type === "sonos_stop" || card.action.type === "stop_all";
+  const sonosSelectedHost = usesSonosTarget ? card.action.target : "";
+  const actionTarget = usesSonosTarget ? "" : card.action.target;
+
+  return `
+    <form class="action-form" method="post" action="/actions">
+      <input type="hidden" name="tag_id" value="${escapeHtml(card.tag_id)}">
+      <label>
+        <span>Action</span>
+        <select name="action_type">${renderActionTypeOptions(card.action.type)}</select>
+      </label>
+      <label>
+        <span>Details</span>
+        <input name="action_target" value="${escapeHtml(actionTarget)}" placeholder="Frozen soundtrack, 20 minutes" maxlength="500">
+      </label>
+      <label>
+        <span>Sonos device</span>
+        <select name="sonos_target_host">${renderSonosDeviceOptions(sonosDevices, sonosSelectedHost)}</select>
+      </label>
+      <label class="toggle-label">
+        <input type="hidden" name="enabled" value="0">
+        <input type="checkbox" name="enabled" value="1"${checked}>
+        <span>Enabled</span>
+      </label>
+      <button type="submit">Save</button>
+    </form>
+  `;
+}
+
+function renderKnownCards(cards, sonosDevices, receivers) {
+  if (!cards.length) {
+    return `<div class="empty">No known cards yet.</div>`;
+  }
+
+  const rows = cards
+    .map(
+      (card) => `
+        <tr>
+          <td>
+            <strong>${escapeHtml(card.name)}</strong>
+            <span class="small-text"><code>${escapeHtml(card.tag_id)}</code></span>
+          </td>
+          <td>${escapeHtml(card.notes) || `<span class="muted">No notes</span>`}</td>
+          <td>${renderActionForm(card, sonosDevices)}</td>
+          <td>
+            <form class="test-scan-form" method="post" action="/test-scan">
+              <input type="hidden" name="tag_id" value="${escapeHtml(card.tag_id)}">
+              <select name="reader_id">${renderReceiverOptions(receivers)}</select>
+              <button type="submit">Test Scan</button>
+            </form>
+          </td>
+        </tr>
+      `,
+    )
+    .join("");
+
+  return `
+    <div class="table-wrap">
+      <table class="cards-table">
+        <thead>
+          <tr>
+            <th>Card</th>
+            <th>Notes</th>
+            <th>Fake action</th>
+            <th>Test</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderActionEvents(events) {
+  if (!events.length) {
+    return `<div class="empty">No action events yet. Scan a known card with an enabled action.</div>`;
+  }
+
+  const rows = events
+    .map(
+      (event) => `
+        <tr>
+          <td>${escapeHtml(formatScanTime(event.created_at))}</td>
+          <td><code>${escapeHtml(event.tag_id)}</code></td>
+          <td>${escapeHtml(event.action_type)}</td>
+          <td>${escapeHtml(event.action_target) || `<span class="muted">No target</span>`}</td>
+          <td><span class="action-status">${escapeHtml(event.status)}</span></td>
+          <td>${escapeHtml(event.message) || `<span class="muted">No message</span>`}</td>
+        </tr>
+      `,
+    )
+    .join("");
+
+  return `
+    <div class="table-wrap">
+      <table class="events-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Tag</th>
+            <th>Action</th>
+            <th>Target</th>
+            <th>Status</th>
+            <th>Message</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderSonosSettings(settings, devices) {
+  const checked = settings.enabled ? " checked" : "";
+  const statusClass = settings.enabled ? "armed" : "safe";
+  const statusText = settings.enabled ? "Real Sonos commands enabled" : "Dry run only";
+  const rows = devices.length
+    ? devices
+        .map(
+          (device) => `
+            <tr>
+              <td colspan="3">
+                <form class="sonos-device-row-form" method="post" action="/sonos/devices/update">
+                  <input type="hidden" name="id" value="${escapeHtml(device.id)}">
+                  <label>
+                    <span>Name</span>
+                    <input name="name" value="${escapeHtml(device.name)}" maxlength="120" required>
+                  </label>
+                  <label>
+                    <span>Host/IP</span>
+                    <input name="host" value="${escapeHtml(device.host)}" maxlength="255" required>
+                  </label>
+                  <label class="toggle-label">
+                    <input type="hidden" name="enabled" value="0">
+                    <input type="checkbox" name="enabled" value="1"${device.enabled ? " checked" : ""}>
+                    <span>Enabled</span>
+                  </label>
+                  <button type="submit">Save</button>
+                </form>
+              </td>
+            </tr>
+          `,
+        )
+        .join("")
+    : `
+      <tr>
+        <td colspan="3"><span class="muted">No Sonos devices added yet.</span></td>
+      </tr>
+    `;
+
+  return `
+    <div class="sonos-settings-grid">
+      <form class="sonos-toggle-form" method="post" action="/settings/sonos">
+        <label class="toggle-label">
+          <input type="hidden" name="sonos_enabled" value="0">
+          <input type="checkbox" name="sonos_enabled" value="1"${checked}>
+          <span>Allow real Sonos commands</span>
+        </label>
+        <span class="sonos-mode ${statusClass}">${statusText}</span>
+        <button type="submit">Save Safety Switch</button>
+      </form>
+
+      <form class="sonos-device-form" method="post" action="/sonos/devices">
+        <label>
+          <span>Name</span>
+          <input name="name" placeholder="Living room" maxlength="120" required>
+        </label>
+        <label>
+          <span>Host/IP</span>
+          <input name="host" placeholder="192.168.5.40 or speaker.local" maxlength="255" required>
+        </label>
+        <label class="toggle-label">
+          <input type="hidden" name="enabled" value="0">
+          <input type="checkbox" name="enabled" value="1" checked>
+          <span>Enabled</span>
+        </label>
+        <button type="submit">Add Device</button>
+      </form>
+    </div>
+
+    <table class="sonos-devices-table">
+      <thead>
+        <tr>
+          <th colspan="3">Saved devices</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function renderReceiverSonosOptions(devices, selectedHost) {
+  const options = [`<option value="">No default speaker</option>`].concat(
+    devices.map((device) => {
+      const selected = device.host === selectedHost ? " selected" : "";
+      const disabled = device.enabled ? "" : " disabled";
+      return `<option value="${escapeHtml(device.host)}"${selected}${disabled}>${escapeHtml(device.name)} (${escapeHtml(device.host)})</option>`;
+    }),
+  );
+
+  return options.join("");
+}
+
+function renderReceivers(receivers, sonosDevices) {
+  const rows = receivers.length
+    ? receivers
+        .map(
+          (receiver) => {
+            return `
+              <tr>
+                <td colspan="5">
+                  <form class="receiver-row-form" method="post" action="/receivers/update">
+                    <input type="hidden" name="id" value="${escapeHtml(receiver.id)}">
+                    <label>
+                      <span>Receiver name</span>
+                      <input name="name" value="${escapeHtml(receiver.name)}" maxlength="120" required>
+                    </label>
+                    <label>
+                      <span>Reader ID</span>
+                      <input name="reader_id" value="${escapeHtml(receiver.reader_id)}" maxlength="128" required>
+                    </label>
+                    <label>
+                      <span>Child</span>
+                      <input name="child_name" value="${escapeHtml(receiver.child_name)}" maxlength="120">
+                    </label>
+                    <label>
+                      <span>Default speaker</span>
+                      <select name="default_sonos_host">${renderReceiverSonosOptions(sonosDevices, receiver.default_sonos_host)}</select>
+                    </label>
+                    <label>
+                      <span>Spotify account</span>
+                      <input name="spotify_account_label" value="${escapeHtml(receiver.spotify_account_label)}" maxlength="160">
+                    </label>
+                    <label class="toggle-label">
+                      <input type="hidden" name="enabled" value="0">
+                      <input type="checkbox" name="enabled" value="1"${receiver.enabled ? " checked" : ""}>
+                      <span>Enabled</span>
+                    </label>
+                    <button type="submit">Save</button>
+                  </form>
+                </td>
+              </tr>
+            `;
+          },
+        )
+        .join("")
+    : `
+      <tr>
+        <td colspan="5"><span class="muted">No receivers added yet.</span></td>
+      </tr>
+    `;
+
+  return `
+    <form class="receiver-form" method="post" action="/receivers">
+      <label>
+        <span>Receiver name</span>
+        <input name="name" placeholder="Eabha receiver" maxlength="120" required>
+      </label>
+      <label>
+        <span>Reader ID</span>
+        <input name="reader_id" placeholder="tagreader-c6c6e4" maxlength="128" required>
+      </label>
+      <label>
+        <span>Child</span>
+        <input name="child_name" placeholder="Eabha" maxlength="120">
+      </label>
+      <label>
+        <span>Default speaker</span>
+        <select name="default_sonos_host">${renderReceiverSonosOptions(sonosDevices, "")}</select>
+      </label>
+      <label>
+        <span>Spotify account</span>
+        <input name="spotify_account_label" placeholder="Later" maxlength="160">
+      </label>
+      <label class="toggle-label">
+        <input type="hidden" name="enabled" value="0">
+        <input type="checkbox" name="enabled" value="1" checked>
+        <span>Enabled</span>
+      </label>
+      <button type="submit">Add Receiver</button>
+    </form>
+
+    <table class="receivers-table">
+      <thead>
+        <tr>
+          <th colspan="5">Saved receivers</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function renderEspHomeBridge(settings, status) {
+  const checked = settings.enabled ? " checked" : "";
+  const statusClass = status.status === "connected" ? "armed" : "safe";
+  const logRows = Array.isArray(status.logHistory) && status.logHistory.length
+    ? status.logHistory
+        .slice(0, 8)
+        .map(
+          (entry) => `
+            <li>
+              <span>${escapeHtml(formatScanTime(entry.at))}</span>
+              <code>${escapeHtml(entry.message)}</code>
+            </li>
+          `,
+        )
+        .join("")
+    : `<li><span class="muted">No reader logs yet</span></li>`;
+
+  return `
+    <form class="esphome-form" method="post" action="/settings/esphome">
+      <label>
+        <span>Reader host/IP</span>
+        <input name="esphome_host" value="${escapeHtml(settings.host)}" placeholder="192.168.5.28" maxlength="255" required>
+      </label>
+      <label>
+        <span>Reader ID</span>
+        <input name="reader_id" value="${escapeHtml(settings.reader_id)}" placeholder="tagreader-c6c6e4" maxlength="128" required>
+      </label>
+      <label class="toggle-label">
+        <input type="hidden" name="esphome_enabled" value="0">
+        <input type="checkbox" name="esphome_enabled" value="1"${checked}>
+        <span>Enable reader bridge</span>
+      </label>
+      <span class="sonos-mode ${statusClass}">${escapeHtml(status.status)}</span>
+      <button type="submit">Save Bridge</button>
+    </form>
+    <div class="bridge-status">
+      <span>Last tag: ${status.lastTagId ? `<code>${escapeHtml(status.lastTagId)}</code>` : `<span class="muted">none</span>`}</span>
+      <span>Last scan: ${status.lastScanAt ? escapeHtml(formatScanTime(status.lastScanAt)) : `<span class="muted">none</span>`}</span>
+      <span>Last log: ${status.lastLog ? escapeHtml(status.lastLog) : `<span class="muted">none</span>`}</span>
+      ${status.lastError ? `<span class="error-text">Error: ${escapeHtml(status.lastError)}</span>` : ""}
+    </div>
+    <ol class="bridge-log-list">${logRows}</ol>
+  `;
+}
+
+function renderReaderTestAction(settings, sonosDevices) {
+  const checked = settings.enabled ? " checked" : "";
+  const usesSonosTarget = settings.action.type === "sonos_play" || settings.action.type === "sonos_stop" || settings.action.type === "stop_all";
+  const sonosSelectedHost = usesSonosTarget ? settings.action.target : "";
+  const actionTarget = usesSonosTarget ? "" : settings.action.target;
+
+  return `
+    <form class="reader-test-form" method="post" action="/settings/reader-test-action">
+      <label class="toggle-label">
+        <input type="hidden" name="reader_test_enabled" value="0">
+        <input type="checkbox" name="reader_test_enabled" value="1"${checked}>
+        <span>Use unknown ESPHome scans as test trigger</span>
+      </label>
+      <label>
+        <span>Reader ID</span>
+        <input name="reader_id" value="${escapeHtml(settings.reader_id)}" placeholder="tagreader-c6c6e4" maxlength="128" required>
+      </label>
+      <label>
+        <span>Action</span>
+        <select name="action_type">${renderActionTypeOptions(settings.action.type)}</select>
+      </label>
+      <label>
+        <span>Details</span>
+        <input name="action_target" value="${escapeHtml(actionTarget)}" placeholder="Reader test trigger" maxlength="500">
+      </label>
+      <label>
+        <span>Sonos device</span>
+        <select name="sonos_target_host">${renderSonosDeviceOptions(sonosDevices, sonosSelectedHost)}</select>
+      </label>
+      <button type="submit">Save Test Action</button>
+    </form>
+  `;
+}
+
+function renderSpotifySettings(status) {
+  const modeClass = status.authorized ? "armed" : "safe";
+  const modeText = !status.configured ? "Needs app credentials" : status.authorized ? "Authorized" : "Needs login";
+  const loginLink = status.configured ? `<a class="button-link" href="/spotify/login">Connect Spotify</a>` : "";
+  const startVolumeValue = status.start_volume_percent === "" ? "" : String(status.start_volume_percent);
+
+  return `
+    <div class="bridge-status">
+      <span>Spotify: <span class="sonos-mode ${modeClass}">${escapeHtml(modeText)}</span></span>
+      <span>Start volume: <code>${startVolumeValue ? `${escapeHtml(startVolumeValue)}%` : "unchanged"}</code></span>
+      <span>Redirect URI: <code>${escapeHtml(status.redirect_uri)}</code></span>
+      <span>Scopes: <code>${escapeHtml(status.scopes.join(" "))}</code></span>
+      ${status.expires_at ? `<span>Token expires: ${escapeHtml(formatScanTime(status.expires_at))}</span>` : ""}
+      ${loginLink}
+    </div>
+    <form class="spotify-form" method="post" action="/settings/spotify-playback">
+      <label>
+        <span>Default device ID</span>
+        <input name="default_device_id" value="${escapeHtml(status.default_device_id)}" placeholder="Spotify Connect device ID" maxlength="200">
+      </label>
+      <label>
+        <span>Start volume</span>
+        <input type="number" name="start_volume_percent" value="${escapeHtml(startVolumeValue)}" min="0" max="100" step="1" placeholder="30">
+      </label>
+      <button type="submit">Save Spotify</button>
+    </form>
+  `;
+}
+
+function renderHomePage() {
+  const scans = getRecentScans(50);
+  const cards = getCards(100);
+  const actionEvents = getActionEvents(20);
+  const sonosSettings = getSonosSettings();
+  const sonosDevices = getSonosDevices();
+  const receivers = getReceivers();
+  const espHomeSettings = getEspHomeSettings();
+  const espHomeStatus = getEspHomeBridgeStatus();
+  const readerTestActionSettings = getReaderTestActionSettings();
+  const spotifyStatus = getSpotifyStatus();
+  const cardCount = countCards.get().card_count;
+  const actionEventCount = countActionEvents.get().action_event_count;
+  const rows = scans
+    .map(
+      (scan) => `
+        <tr>
+          <td>${escapeHtml(scan.id)}</td>
+          <td>
+            <code>${escapeHtml(scan.tag_id)}</code>
+            <span class="pill ${scan.known ? "known" : "unknown"}">${scan.known ? "Known" : "Unknown"}</span>
+          </td>
+          <td>
+            ${scan.known ? escapeHtml(scan.card.name) : `<span class="muted">Unassigned</span>`}
+            <span class="small-text">${renderActionSummary(scan)}</span>
+          </td>
+          <td>
+            ${scan.receiver ? escapeHtml(scan.receiver.name) : `<span class="muted">Unknown</span>`}
+            <span class="small-text"><code>${escapeHtml(scan.reader_id)}</code></span>
+          </td>
+          <td>${escapeHtml(scan.source)}</td>
+          <td class="time-cell" title="${escapeHtml(scan.scanned_at)}">${escapeHtml(formatScanTime(scan.scanned_at))}</td>
+          <td class="assign-cell">${renderCardForm(scan)}</td>
+        </tr>
+      `,
+    )
+    .join("");
+
+  const table = scans.length
+    ? `
+      <div class="table-wrap">
+        <table class="scans-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Tag</th>
+              <th>Card</th>
+              <th>Reader</th>
+              <th>Source</th>
+              <th>Scanned at</th>
+              <th>Assign</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `
+    : `<div class="empty">No scans received yet.</div>`;
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kids Tunes</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f5f1e8;
+        color: #1f2933;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          linear-gradient(135deg, rgba(64, 135, 115, 0.16), transparent 32rem),
+          linear-gradient(315deg, rgba(221, 108, 64, 0.12), transparent 30rem),
+          #f5f1e8;
+      }
+
+      main {
+        width: min(1500px, calc(100% - 48px));
+        margin: 0 auto;
+        padding: 32px 0 48px;
+      }
+
+      header {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 28px;
+      }
+
+      h1 {
+        margin: 0 0 6px;
+        font-size: clamp(2rem, 5vw, 3.5rem);
+        line-height: 1;
+        letter-spacing: 0;
+      }
+
+      p {
+        margin: 0;
+        color: #56616b;
+      }
+
+      .stats {
+        display: flex;
+        gap: 10px;
+      }
+
+      .status {
+        border: 1px solid rgba(31, 41, 51, 0.14);
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: rgba(255, 255, 255, 0.64);
+        min-width: 136px;
+      }
+
+      .status span {
+        display: block;
+        font-size: 0.78rem;
+        color: #64707a;
+      }
+
+      .status strong {
+        display: block;
+        margin-top: 2px;
+        font-size: 1.45rem;
+      }
+
+      section {
+        background: rgba(255, 255, 255, 0.72);
+        border: 1px solid rgba(31, 41, 51, 0.13);
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 18px 42px rgba(31, 41, 51, 0.08);
+      }
+
+      section + section {
+        margin-top: 22px;
+      }
+
+      h2 {
+        margin: 0;
+        font-size: 1rem;
+        letter-spacing: 0;
+      }
+
+      .section-heading {
+        padding: 14px 16px;
+        background: rgba(64, 135, 115, 0.1);
+        border-bottom: 1px solid rgba(31, 41, 51, 0.1);
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      .scans-table {
+        table-layout: fixed;
+      }
+
+      th,
+      td {
+        padding: 14px 16px;
+        text-align: left;
+        border-bottom: 1px solid rgba(31, 41, 51, 0.1);
+        vertical-align: top;
+      }
+
+      th {
+        background: rgba(64, 135, 115, 0.1);
+        color: #263238;
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      td {
+        font-size: 0.95rem;
+      }
+
+      .scans-table td:nth-child(3) {
+        white-space: normal;
+      }
+
+      .scans-table th:nth-child(1),
+      .scans-table td:nth-child(1) {
+        width: 42px;
+      }
+
+      .scans-table th:nth-child(2),
+      .scans-table td:nth-child(2) {
+        width: 160px;
+      }
+
+      .scans-table th:nth-child(3),
+      .scans-table td:nth-child(3) {
+        width: 140px;
+      }
+
+      .scans-table th:nth-child(4),
+      .scans-table td:nth-child(4) {
+        width: 150px;
+      }
+
+      .scans-table th:nth-child(5),
+      .scans-table td:nth-child(5) {
+        width: 76px;
+      }
+
+      .scans-table th:nth-child(6),
+      .scans-table td:nth-child(6) {
+        width: 135px;
+      }
+
+      code {
+        font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.9em;
+        overflow-wrap: anywhere;
+      }
+
+      input,
+      select {
+        width: 100%;
+        min-width: 0;
+        min-height: 36px;
+        border: 1px solid rgba(31, 41, 51, 0.18);
+        border-radius: 6px;
+        padding: 7px 9px;
+        background: rgba(255, 255, 255, 0.82);
+        color: inherit;
+        font: inherit;
+      }
+
+      select {
+        cursor: pointer;
+      }
+
+      button {
+        min-height: 36px;
+        border: 0;
+        border-radius: 6px;
+        padding: 0 12px;
+        background: #2f7d6d;
+        color: #ffffff;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #286a5d;
+      }
+
+      .button-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 34px;
+        width: max-content;
+        border-radius: 6px;
+        padding: 0 12px;
+        background: #2f7d6d;
+        color: #ffffff;
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      .assign-form {
+        display: grid;
+        grid-template-columns: minmax(130px, 1fr) minmax(160px, 1.25fr) auto;
+        gap: 8px;
+        align-items: end;
+        min-width: 0;
+      }
+
+      .action-form {
+        display: grid;
+        grid-template-columns: minmax(130px, 0.7fr) minmax(170px, 1fr) minmax(190px, 1fr) auto auto;
+        gap: 8px;
+        align-items: end;
+      }
+
+      .test-scan-form {
+        display: grid;
+        grid-template-columns: minmax(160px, 1fr) auto;
+        gap: 8px;
+        align-items: end;
+      }
+
+      .sonos-settings-grid {
+        display: grid;
+        gap: 14px;
+      }
+
+      .sonos-toggle-form,
+      .sonos-device-form,
+      .receiver-form,
+      .esphome-form,
+      .reader-test-form,
+      .spotify-form,
+      .sonos-device-row-form,
+      .receiver-row-form {
+        display: grid;
+        grid-template-columns: auto auto auto;
+        gap: 10px;
+        align-items: end;
+        justify-content: start;
+      }
+
+      .sonos-device-form {
+        grid-template-columns: minmax(180px, 260px) minmax(240px, 360px) auto auto;
+      }
+
+      .receiver-form {
+        grid-template-columns:
+          minmax(150px, 1fr)
+          minmax(160px, 1fr)
+          minmax(120px, 0.8fr)
+          minmax(210px, 1.2fr)
+          minmax(140px, 0.9fr)
+          auto
+          auto;
+        margin-bottom: 16px;
+      }
+
+      .esphome-form {
+        grid-template-columns: minmax(220px, 340px) minmax(180px, 260px) auto auto auto;
+      }
+
+      .reader-test-form {
+        grid-template-columns:
+          minmax(210px, auto)
+          minmax(180px, 260px)
+          minmax(140px, 190px)
+          minmax(180px, 1fr)
+          minmax(210px, 280px)
+          auto;
+      }
+
+      .spotify-form {
+        grid-template-columns: minmax(260px, 1fr) minmax(120px, 160px) auto;
+        margin-top: 12px;
+      }
+
+      .sonos-device-row-form {
+        grid-template-columns: minmax(180px, 260px) minmax(240px, 360px) auto auto;
+      }
+
+      .receiver-row-form {
+        grid-template-columns:
+          minmax(150px, 1fr)
+          minmax(160px, 1fr)
+          minmax(120px, 0.8fr)
+          minmax(210px, 1.2fr)
+          minmax(140px, 0.9fr)
+          auto
+          auto;
+      }
+
+      .settings-panel {
+        padding: 16px;
+      }
+
+      .assign-form span,
+      .action-form span,
+      .sonos-toggle-form span,
+      .sonos-device-form span,
+      .receiver-form span,
+      .esphome-form span,
+      .reader-test-form span,
+      .spotify-form span,
+      .sonos-device-row-form span,
+      .receiver-row-form span {
+        display: block;
+        margin-bottom: 4px;
+        color: #64707a;
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .toggle-label {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 36px;
+        padding-bottom: 2px;
+      }
+
+      .toggle-label input {
+        width: 16px;
+        min-height: 16px;
+      }
+
+      .toggle-label span {
+        margin: 0;
+      }
+
+      .pill {
+        display: block;
+        width: fit-content;
+        margin-top: 6px;
+        border-radius: 999px;
+        padding: 3px 8px;
+        font-size: 0.72rem;
+        font-weight: 800;
+        vertical-align: 1px;
+      }
+
+      .time-cell {
+        white-space: normal;
+      }
+
+      .assign-cell {
+        width: auto;
+      }
+
+      .assign-cell label {
+        min-width: 0;
+      }
+
+      .cards-table td:first-child {
+        width: 190px;
+      }
+
+      .cards-table td:nth-child(2) {
+        width: 190px;
+      }
+
+      .cards-table td:nth-child(4) {
+        width: 120px;
+      }
+
+      .events-table td:first-child {
+        width: 190px;
+      }
+
+      .action-status {
+        display: inline-block;
+        width: fit-content;
+        border-radius: 999px;
+        padding: 3px 8px;
+        background: rgba(47, 125, 109, 0.14);
+        color: #1d5f52;
+        font-size: 0.72rem;
+        font-weight: 800;
+      }
+
+      .sonos-mode {
+        display: inline-flex;
+        align-items: center;
+        min-height: 36px;
+        border-radius: 999px;
+        padding: 0 12px;
+        font-size: 0.78rem;
+        font-weight: 800;
+      }
+
+      .sonos-mode.safe {
+        background: rgba(183, 83, 45, 0.14);
+        color: #9d4324;
+      }
+
+      .sonos-mode.armed {
+        background: rgba(47, 125, 109, 0.14);
+        color: #1d5f52;
+      }
+
+      .bridge-status {
+        display: grid;
+        gap: 8px;
+        margin-top: 14px;
+        color: #56616b;
+        font-size: 0.9rem;
+      }
+
+      .bridge-log-list {
+        display: grid;
+        gap: 6px;
+        margin: 12px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .bridge-log-list li {
+        display: grid;
+        grid-template-columns: minmax(130px, auto) minmax(0, 1fr);
+        gap: 10px;
+        align-items: baseline;
+        color: #56616b;
+        font-size: 0.82rem;
+      }
+
+      .bridge-log-list code {
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+
+      .error-text {
+        color: #9d4324;
+        font-weight: 700;
+      }
+
+      .small-text {
+        display: block;
+        margin-top: 6px;
+        color: #64707a;
+        font-size: 0.82rem;
+      }
+
+      .known {
+        background: rgba(47, 125, 109, 0.14);
+        color: #1d5f52;
+      }
+
+      .unknown {
+        background: rgba(183, 83, 45, 0.14);
+        color: #9d4324;
+      }
+
+      .muted,
+      .empty {
+        color: #56616b;
+      }
+
+      .empty {
+        padding: 36px 18px;
+        text-align: center;
+      }
+
+      @media (max-width: 760px) {
+        header {
+          display: block;
+        }
+
+        .stats {
+          margin-top: 18px;
+        }
+
+        .sonos-toggle-form,
+        .sonos-device-form,
+        .receiver-form,
+        .esphome-form,
+        .reader-test-form,
+        .sonos-device-row-form,
+        .receiver-row-form,
+        .spotify-form,
+        .action-form,
+        .assign-form {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          background: #101820;
+          color: #f3f5f1;
+        }
+
+        body {
+          background:
+            linear-gradient(135deg, rgba(64, 135, 115, 0.22), transparent 32rem),
+            linear-gradient(315deg, rgba(221, 108, 64, 0.12), transparent 30rem),
+            #101820;
+        }
+
+        p,
+        .status span,
+        .assign-form span,
+        .action-form span,
+        .sonos-toggle-form span,
+        .sonos-device-form span,
+        .receiver-form span,
+        .esphome-form span,
+        .reader-test-form span,
+        .spotify-form span,
+        .sonos-device-row-form span,
+        .receiver-row-form span,
+        .small-text,
+        .bridge-status,
+        .muted,
+        .empty {
+          color: #aeb8bd;
+        }
+
+        section,
+        .status {
+          background: rgba(25, 34, 42, 0.82);
+          border-color: rgba(255, 255, 255, 0.12);
+        }
+
+        th,
+        td {
+          border-bottom-color: rgba(255, 255, 255, 0.1);
+        }
+
+        th {
+          background: rgba(64, 135, 115, 0.18);
+          color: #e7ece8;
+        }
+
+        input,
+        select {
+          border-color: rgba(255, 255, 255, 0.2);
+          background: rgba(255, 255, 255, 0.08);
+        }
+
+        .known {
+          color: #91e3cc;
+        }
+
+        .unknown {
+          color: #ffad8a;
+        }
+
+        .action-status {
+          color: #91e3cc;
+        }
+
+        .sonos-mode.safe {
+          color: #ffad8a;
+        }
+
+        .sonos-mode.armed {
+          color: #91e3cc;
+        }
+
+        .error-text {
+          color: #ffad8a;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Kids Tunes</h1>
+          <p>Recent scans and known card assignments.</p>
+        </div>
+        <div class="stats">
+          <div class="status">
+            <span>Shown scans</span>
+            <strong>${scans.length}</strong>
+          </div>
+          <div class="status">
+            <span>Known cards</span>
+            <strong>${cardCount}</strong>
+          </div>
+          <div class="status">
+            <span>Action events</span>
+            <strong>${actionEventCount}</strong>
+          </div>
+          <div class="status">
+            <span>Sonos</span>
+            <strong>${sonosSettings.enabled ? "On" : "Off"}</strong>
+          </div>
+          <div class="status">
+            <span>Receivers</span>
+            <strong>${receivers.length}</strong>
+          </div>
+        </div>
+      </header>
+
+      <section aria-label="Sonos settings">
+        <div class="section-heading">
+          <h2>Sonos devices</h2>
+        </div>
+        <div class="settings-panel">
+          ${renderSonosSettings(sonosSettings, sonosDevices)}
+        </div>
+      </section>
+
+      <section aria-label="Receivers">
+        <div class="section-heading">
+          <h2>Receivers</h2>
+        </div>
+        <div class="settings-panel">
+          ${renderReceivers(receivers, sonosDevices)}
+        </div>
+      </section>
+
+      <section aria-label="Spotify settings">
+        <div class="section-heading">
+          <h2>Spotify</h2>
+        </div>
+        <div class="settings-panel">
+          ${renderSpotifySettings(spotifyStatus)}
+        </div>
+      </section>
+
+      <section aria-label="ESPHome reader bridge">
+        <div class="section-heading">
+          <h2>ESPHome reader bridge</h2>
+        </div>
+        <div class="settings-panel">
+          ${renderEspHomeBridge(espHomeSettings, espHomeStatus)}
+        </div>
+        <div class="section-heading">
+          <h2>Reader test action</h2>
+        </div>
+        <div class="settings-panel">
+          ${renderReaderTestAction(readerTestActionSettings, sonosDevices)}
+        </div>
+      </section>
+
+      <section aria-label="Recent scans">
+        <div class="section-heading">
+          <h2>Recent scans</h2>
+        </div>
+        ${table}
+      </section>
+
+      <section aria-label="Known cards">
+        <div class="section-heading">
+          <h2>Known cards</h2>
+        </div>
+        ${renderKnownCards(cards, sonosDevices, receivers)}
+      </section>
+
+      <section aria-label="Action events">
+        <div class="section-heading">
+          <h2>Action events</h2>
+        </div>
+        ${renderActionEvents(actionEvents)}
+      </section>
+    </main>
+  </body>
+</html>`;
+}
+
+async function handleRequest(request, response) {
+  const url = new URL(request.url, `http://${request.headers.host || `${HOST}:${PORT}`}`);
+
+  if (request.method === "GET" && url.pathname === "/") {
+    sendHtml(response, renderHomePage());
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/health") {
+    sendJson(response, 200, {
+      ok: true,
+      service: "kids-tunes",
+      database: {
+        path: DB_PATH,
+        exists: fs.existsSync(DB_PATH),
+        scan_count: countScans.get().scan_count,
+        card_count: countCards.get().card_count,
+        action_event_count: countActionEvents.get().action_event_count,
+        receiver_count: countReceivers.get().receiver_count,
+      },
+      esphome: getEspHomeBridgeStatus(),
+    });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/scans") {
+    sendJson(response, 200, {
+      ok: true,
+      scans: getRecentScans(url.searchParams.get("limit") || 50),
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/scan") {
+    try {
+      const payload = await readPayload(request);
+      const scan = normalizeScan(payload);
+
+      if (scan.error) {
+        sendJson(response, 400, { ok: false, error: scan.error });
+        return;
+      }
+
+      sendJson(response, 201, {
+        ok: true,
+        scan: await createScan(scan),
+      });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/cards") {
+    sendJson(response, 200, {
+      ok: true,
+      cards: getCards(url.searchParams.get("limit") || 100),
+    });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/receivers") {
+    sendJson(response, 200, {
+      ok: true,
+      receivers: getReceivers(),
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/receivers") {
+    try {
+      const payload = await readPayload(request);
+      const receiver = normalizeReceiver(payload);
+
+      if (receiver.error) {
+        sendJson(response, 400, { ok: false, error: receiver.error });
+        return;
+      }
+
+      sendJson(response, 200, { ok: true, receiver: upsertReceiver(receiver) });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "PUT" && url.pathname === "/api/receivers") {
+    try {
+      const payload = await readPayload(request);
+      const receiver = normalizeReceiverUpdate(payload);
+
+      if (receiver.error) {
+        sendJson(response, 400, { ok: false, error: receiver.error });
+        return;
+      }
+
+      sendJson(response, 200, { ok: true, receiver: updateReceiver(receiver) });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/settings/sonos") {
+    sendJson(response, 200, {
+      ok: true,
+      sonos: getSonosSettings(),
+      devices: getSonosDevices(),
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/settings/sonos") {
+    try {
+      const payload = await readPayload(request);
+      const settings = normalizeSonosSettings(payload);
+
+      if (settings.error) {
+        sendJson(response, 400, { ok: false, error: settings.error });
+        return;
+      }
+
+      sendJson(response, 200, {
+        ok: true,
+        sonos: saveSonosSettings(settings),
+        devices: getSonosDevices(),
+      });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/spotify/status") {
+    sendJson(response, 200, {
+      ok: true,
+      spotify: getSpotifyStatus(),
+    });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/spotify/devices") {
+    try {
+      sendJson(response, 200, {
+        ok: true,
+        spotify: getSpotifyStatus(),
+        devices: await getSpotifyDevices(),
+      });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message, spotify: getSpotifyStatus() });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/settings/spotify-playback") {
+    try {
+      const payload = await readPayload(request);
+      const settings = normalizeSpotifyPlaybackSettings(payload);
+
+      if (settings.error) {
+        sendJson(response, 400, { ok: false, error: settings.error });
+        return;
+      }
+
+      sendJson(response, 200, {
+        ok: true,
+        spotify: saveSpotifyPlaybackSettings(settings),
+      });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/spotify/play") {
+    try {
+      const payload = await readPayload(request);
+      const result = await sendSpotifyPlay(
+        payload.spotify_uri || payload.uri || payload.url || payload.action_target,
+        payload.device_id || payload.default_device_id || undefined,
+      );
+
+      sendJson(response, 200, {
+        ok: true,
+        result,
+      });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/spotify/login") {
+    const config = getSpotifyConfig();
+
+    if (!config.clientId || !config.clientSecret) {
+      sendJson(response, 400, {
+        ok: false,
+        error: "Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET, then restart the app",
+        redirect_uri: config.redirectUri,
+      });
+      return;
+    }
+
+    const state = crypto.randomBytes(16).toString("hex");
+    setSetting("spotify_oauth_state", state);
+    const authorizeUrl = new URL("https://accounts.spotify.com/authorize");
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", config.clientId);
+    authorizeUrl.searchParams.set("scope", SPOTIFY_SCOPES.join(" "));
+    authorizeUrl.searchParams.set("redirect_uri", config.redirectUri);
+    authorizeUrl.searchParams.set("state", state);
+    redirect(response, authorizeUrl.toString());
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/spotify/callback") {
+    try {
+      const expectedState = getSetting("spotify_oauth_state", "");
+      const state = url.searchParams.get("state") || "";
+      const code = url.searchParams.get("code") || "";
+
+      if (!code) {
+        sendJson(response, 400, { ok: false, error: url.searchParams.get("error") || "Missing Spotify code" });
+        return;
+      }
+
+      if (!expectedState || state !== expectedState) {
+        sendJson(response, 400, { ok: false, error: "Spotify OAuth state did not match" });
+        return;
+      }
+
+      await exchangeSpotifyCode(code);
+      redirect(response, "/");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/settings/esphome") {
+    sendJson(response, 200, {
+      ok: true,
+      esphome: getEspHomeSettings(),
+      bridge: getEspHomeBridgeStatus(),
+      reader_test_action: getReaderTestActionSettings(),
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/settings/esphome") {
+    try {
+      const payload = await readPayload(request);
+      const settings = normalizeEspHomeSettings(payload);
+
+      if (settings.error) {
+        sendJson(response, 400, { ok: false, error: settings.error });
+        return;
+      }
+
+      const savedSettings = saveEspHomeSettings(settings);
+
+      if (savedSettings.enabled) {
+        startEspHomeBridge(savedSettings);
+      } else {
+        stopEspHomeBridge();
+      }
+
+      sendJson(response, 200, {
+        ok: true,
+        esphome: savedSettings,
+        bridge: getEspHomeBridgeStatus(),
+      });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/settings/reader-test-action") {
+    sendJson(response, 200, {
+      ok: true,
+      reader_test_action: getReaderTestActionSettings(),
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/settings/reader-test-action") {
+    try {
+      const payload = await readPayload(request);
+      const settings = normalizeReaderTestActionSettings(payload);
+
+      if (settings.error) {
+        sendJson(response, 400, { ok: false, error: settings.error });
+        return;
+      }
+
+      sendJson(response, 200, {
+        ok: true,
+        reader_test_action: saveReaderTestActionSettings(settings),
+      });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/sonos/devices") {
+    try {
+      const payload = await readPayload(request);
+      const device = normalizeSonosDevice(payload);
+
+      if (device.error) {
+        sendJson(response, 400, { ok: false, error: device.error });
+        return;
+      }
+
+      sendJson(response, 200, { ok: true, device: upsertSonosDevice(device) });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "PUT" && url.pathname === "/api/sonos/devices") {
+    try {
+      const payload = await readPayload(request);
+      const device = normalizeSonosDeviceUpdate(payload);
+
+      if (device.error) {
+        sendJson(response, 400, { ok: false, error: device.error });
+        return;
+      }
+
+      sendJson(response, 200, { ok: true, device: updateSonosDevice(device) });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/sonos/test") {
+    try {
+      const payload = await readPayload(request);
+      const command = payload.command === "play" ? "Play" : "Stop";
+      const settings = getSonosSettings();
+      const device = resolveSonosDeviceForTest(payload);
+
+      if (!settings.enabled) {
+        sendJson(response, 400, { ok: false, error: "Sonos must be enabled first" });
+        return;
+      }
+
+      if (!device) {
+        sendJson(response, 400, { ok: false, error: "Choose a Sonos device, or configure exactly one enabled device" });
+        return;
+      }
+
+      if (!device.enabled) {
+        sendJson(response, 400, { ok: false, error: "Selected Sonos device is disabled" });
+        return;
+      }
+
+      const result = await sendSonosTransportCommand(device.host, command);
+      sendJson(response, 200, { ok: true, sonos: settings, device, result });
+    } catch (error) {
+      sendJson(response, 502, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/action-events") {
+    sendJson(response, 200, {
+      ok: true,
+      action_events: getActionEvents(url.searchParams.get("limit") || 20),
+    });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname.startsWith("/api/actions/")) {
+    const tagId = decodeURIComponent(url.pathname.slice("/api/actions/".length));
+    const action = getAction(tagId);
+
+    if (!action) {
+      sendJson(response, 404, { ok: false, error: "Action not found" });
+      return;
+    }
+
+    sendJson(response, 200, { ok: true, action });
+    return;
+  }
+
+  if ((request.method === "POST" || request.method === "PUT") && url.pathname === "/api/actions") {
+    try {
+      const payload = await readPayload(request);
+      const action = normalizeAction(payload);
+
+      if (action.error) {
+        sendJson(response, 400, { ok: false, error: action.error });
+        return;
+      }
+
+      const savedAction = upsertAction(action);
+
+      if (savedAction.error) {
+        sendJson(response, 400, { ok: false, error: savedAction.error });
+        return;
+      }
+
+      sendJson(response, 200, { ok: true, action: savedAction });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname.startsWith("/api/cards/")) {
+    const tagId = decodeURIComponent(url.pathname.slice("/api/cards/".length));
+    const card = getCard(tagId);
+
+    if (!card) {
+      sendJson(response, 404, { ok: false, error: "Card not found" });
+      return;
+    }
+
+    sendJson(response, 200, { ok: true, card });
+    return;
+  }
+
+  if ((request.method === "POST" || request.method === "PUT") && url.pathname === "/api/cards") {
+    try {
+      const payload = await readPayload(request);
+      const card = normalizeCard(payload);
+
+      if (card.error) {
+        sendJson(response, 400, { ok: false, error: card.error });
+        return;
+      }
+
+      sendJson(response, 200, { ok: true, card: upsertCard(card) });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/cards") {
+    try {
+      const payload = await readPayload(request);
+      const card = normalizeCard(payload);
+
+      if (card.error) {
+        sendJson(response, 400, { ok: false, error: card.error });
+        return;
+      }
+
+      upsertCard(card);
+      redirect(response, "/");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/test-scan") {
+    try {
+      const payload = await readPayload(request);
+      const tagId = normalizeTagId(payload.tag_id);
+
+      if (!tagId) {
+        sendJson(response, 400, { ok: false, error: "tag_id is required" });
+        return;
+      }
+
+      const readerId = typeof payload.reader_id === "string" && payload.reader_id.trim()
+        ? payload.reader_id.trim()
+        : "ui-test";
+
+      await createScan({
+        readerId,
+        tagId,
+        source: "ui-test",
+      });
+      redirect(response, "/");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/receivers") {
+    try {
+      const payload = await readPayload(request);
+      const receiver = normalizeReceiver(payload);
+
+      if (receiver.error) {
+        sendJson(response, 400, { ok: false, error: receiver.error });
+        return;
+      }
+
+      upsertReceiver(receiver);
+      redirect(response, "/");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/receivers/update") {
+    try {
+      const payload = await readPayload(request);
+      const receiver = normalizeReceiverUpdate(payload);
+
+      if (receiver.error) {
+        sendJson(response, 400, { ok: false, error: receiver.error });
+        return;
+      }
+
+      updateReceiver(receiver);
+      redirect(response, "/");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/settings/sonos") {
+    try {
+      const payload = await readPayload(request);
+      const settings = normalizeSonosSettings(payload);
+
+      if (settings.error) {
+        sendJson(response, 400, { ok: false, error: settings.error });
+        return;
+      }
+
+      saveSonosSettings(settings);
+      redirect(response, "/");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/settings/spotify-playback") {
+    try {
+      const payload = await readPayload(request);
+      const settings = normalizeSpotifyPlaybackSettings(payload);
+
+      if (settings.error) {
+        sendJson(response, 400, { ok: false, error: settings.error });
+        return;
+      }
+
+      saveSpotifyPlaybackSettings(settings);
+      redirect(response, "/");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/settings/esphome") {
+    try {
+      const payload = await readPayload(request);
+      const settings = normalizeEspHomeSettings(payload);
+
+      if (settings.error) {
+        sendJson(response, 400, { ok: false, error: settings.error });
+        return;
+      }
+
+      const savedSettings = saveEspHomeSettings(settings);
+
+      if (savedSettings.enabled) {
+        startEspHomeBridge(savedSettings);
+      } else {
+        stopEspHomeBridge();
+      }
+
+      redirect(response, "/");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/settings/reader-test-action") {
+    try {
+      const payload = await readPayload(request);
+      const settings = normalizeReaderTestActionSettings(payload);
+
+      if (settings.error) {
+        sendJson(response, 400, { ok: false, error: settings.error });
+        return;
+      }
+
+      saveReaderTestActionSettings(settings);
+      redirect(response, "/");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/sonos/devices") {
+    try {
+      const payload = await readPayload(request);
+      const device = normalizeSonosDevice(payload);
+
+      if (device.error) {
+        sendJson(response, 400, { ok: false, error: device.error });
+        return;
+      }
+
+      upsertSonosDevice(device);
+      redirect(response, "/");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/sonos/devices/update") {
+    try {
+      const payload = await readPayload(request);
+      const device = normalizeSonosDeviceUpdate(payload);
+
+      if (device.error) {
+        sendJson(response, 400, { ok: false, error: device.error });
+        return;
+      }
+
+      updateSonosDevice(device);
+      redirect(response, "/");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/actions") {
+    try {
+      const payload = await readPayload(request);
+      const action = normalizeAction(payload);
+
+      if (action.error) {
+        sendJson(response, 400, { ok: false, error: action.error });
+        return;
+      }
+
+      const savedAction = upsertAction(action);
+
+      if (savedAction.error) {
+        sendJson(response, 400, { ok: false, error: savedAction.error });
+        return;
+      }
+
+      redirect(response, "/");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  notFound(response);
+}
+
+const server = http.createServer((request, response) => {
+  handleRequest(request, response).catch((error) => {
+    console.error(error);
+    sendJson(response, 500, { ok: false, error: "Internal server error" });
+  });
+});
+
+server.listen(PORT, HOST, () => {
+  console.log(`Kids Tunes listening at http://${HOST}:${PORT}`);
+  console.log(`SQLite database: ${DB_PATH}`);
+  startEspHomeBridge();
+});
+
+function shutdown() {
+  stopEspHomeBridge();
+  server.close(() => {
+    db.close();
+    process.exit(0);
+  });
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

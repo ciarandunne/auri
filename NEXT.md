@@ -319,6 +319,29 @@ Example start-assignment payload:
 
 Next playlist step: test this with a real imported playlist and physical blank card, then improve the UI feedback after assignment.
 
+Playlist artwork caching has started:
+
+- Playlist import now tries to download each imported Spotify track/episode artwork immediately.
+- Cached artwork is saved under:
+
+```text
+data/spotify-artwork/
+```
+
+- `media_items.local_artwork_path` is filled when caching succeeds.
+- `/media` uses the local artwork path for thumbnails.
+- `data/spotify-artwork/manifest.json` is updated/merged for cached items.
+- `/media` has a "Cache Missing Artwork" button for older imports or failed artwork downloads.
+- JSON API endpoint:
+
+```text
+POST /api/media/cache-artwork
+```
+
+The cache endpoint checks media items with an `artwork_url` but no `local_artwork_path`, downloads what it can, updates the database, and returns cached/skipped/failed counts.
+
+Note: `data/*` is ignored by Git. Cached artwork is local machine state unless we intentionally change that later.
+
 ## Best Next Build Choices
 
 After the restart/reconnect/import test above, the best next implementation choices are:
@@ -332,10 +355,12 @@ After the restart/reconnect/import test above, the best next implementation choi
    - Next: add richer success/failure feedback directly on `/media` after scan.
 
 2. Playlist artwork caching:
-   - Download imported Spotify artwork into `data/spotify-artwork/`.
-   - Fill `media_items.local_artwork_path`.
-   - Reuse cached artwork for the media table and printable sheets.
-   - Keep filenames stable and readable, based on Spotify title plus type/ID.
+   - Foundation done: playlist import attempts to download artwork into `data/spotify-artwork/`.
+   - Foundation done: `media_items.local_artwork_path` is filled on successful cache.
+   - Foundation done: `/media` has a "Cache Missing Artwork" button.
+   - Foundation done: filenames are stable/readable, based on Spotify title plus type/ID.
+   - Next: test with a real Spotify playlist after reconnecting Spotify.
+   - Next: use cached artwork as the source for printable sheets.
 
 3. Printable label queue:
    - Add print statuses: `not_printed`, `queued`, `pdf_generated`, `printed`.
@@ -349,7 +374,7 @@ After the restart/reconnect/import test above, the best next implementation choi
    - Allow play/pause and volume control from a phone.
    - Keep admin setup pages separate.
 
-Recommended next build: do item 2 next. Artwork caching makes imported playlist items useful for the media table and printable labels.
+Recommended next build: do item 3 next. Printable label queue is the next step toward playlist -> cards -> artwork -> print sheet.
 
 ## Useful Checks
 

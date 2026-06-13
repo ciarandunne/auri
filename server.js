@@ -14,6 +14,8 @@ const ESPHOME_SCAN_DEBOUNCE_MS = 2500;
 const TAGREADER_BUZZER_SWITCH_KEY = 1985256757;
 const MEDIA_ASSIGNMENT_TTL_MS = 15 * 60 * 1000;
 const SPOTIFY_REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI || `http://127.0.0.1:${PORT}/spotify/callback`;
+const SPOTIFY_ARTWORK_DIR = path.join(__dirname, "data", "spotify-artwork");
+const SPOTIFY_ARTWORK_MANIFEST_PATH = path.join(SPOTIFY_ARTWORK_DIR, "manifest.json");
 const SPOTIFY_SCOPES = [
   "playlist-read-private",
   "user-read-playback-state",
@@ -408,6 +410,21 @@ const selectMediaItemByProviderUri = db.prepare(`
 const selectMediaItemById = db.prepare(`
   SELECT *
   FROM media_items
+  WHERE id = ?
+`);
+
+const selectMediaItemsMissingArtwork = db.prepare(`
+  SELECT *
+  FROM media_items
+  WHERE artwork_url != ''
+    AND local_artwork_path = ''
+  ORDER BY updated_at DESC, id DESC
+  LIMIT ?
+`);
+
+const updateMediaItemArtworkStatement = db.prepare(`
+  UPDATE media_items
+  SET local_artwork_path = ?, updated_at = ?
   WHERE id = ?
 `);
 
@@ -1086,19 +1103,131 @@ function spotifyImageUrl(images) {
   return images[0] && images[0].url ? images[0].url : "";
 }
 
-function getSpotifyArtworkManifestByUri() {
-  const manifestPath = path.join(__dirname, "data", "spotify-artwork", "manifest.json");
+function slugifyFilePart(value, fallback = "spotify-item") {
+  const slug = String(value || fallback)
+    .toLowerCase()
+    .replaceAll("&", " and ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 90);
 
-  if (!fs.existsSync(manifestPath)) {
-    return new Map();
+  return slug || fallback;
+}
+
+function imageExtensionFromContentType(contentType) {
+  const normalized = String(contentType || "").toLowerCase();
+
+  if (normalized.includes("png")) {
+    return "png";
+  }
+
+  if (normalized.includes("webp")) {
+    return "webp";
+  }
+
+  return "jpg";
+}
+
+function artworkFileNameForMediaItem(item, contentType = "") {
+  const mediaType = item.mediaType || item.media_type || spotifyMediaTypeFromUri(item.providerUri || item.provider_uri) || "item";
+  const spotifyId = spotifyIdFromUri(item.providerUri || item.provider_uri, mediaType) || slugifyFilePart(item.providerUri || item.provider_uri, "spotify");
+  const extension = imageExtensionFromContentType(contentType);
+  return `${slugifyFilePart(item.title)}--${slugifyFilePart(mediaType)}-${spotifyId}.${extension}`;
+}
+
+function readSpotifyArtworkManifest() {
+  if (!fs.existsSync(SPOTIFY_ARTWORK_MANIFEST_PATH)) {
+    return { generated_at: "", items: [] };
   }
 
   try {
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-    return new Map((manifest.items || []).map((item) => [item.spotify_uri, item]));
+    const manifest = JSON.parse(fs.readFileSync(SPOTIFY_ARTWORK_MANIFEST_PATH, "utf8"));
+    return {
+      generated_at: manifest.generated_at || "",
+      items: Array.isArray(manifest.items) ? manifest.items : [],
+    };
   } catch {
-    return new Map();
+    return { generated_at: "", items: [] };
   }
+}
+
+function writeSpotifyArtworkManifestEntry(item, localArtworkPath) {
+  const providerUri = item.providerUri || item.provider_uri || "";
+
+  if (!providerUri) {
+    return;
+  }
+
+  const manifest = readSpotifyArtworkManifest();
+  const mediaType = item.mediaType || item.media_type || spotifyMediaTypeFromUri(providerUri) || "";
+  const spotifyId = spotifyIdFromUri(providerUri, mediaType) || "";
+  const entry = {
+    spotify_uri: providerUri,
+    spotify_type: mediaType,
+    spotify_id: spotifyId,
+    title: item.title || providerUri,
+    subtitle: item.subtitle || "",
+    show_name: item.showName || item.show_name || "",
+    artist_names: item.artistNames || item.artist_names || "",
+    album_name: item.albumName || item.album_name || "",
+    spotify_url: item.sourceUrl || item.source_url || spotifyUrlForUri(providerUri),
+    image_url: item.artworkUrl || item.artwork_url || "",
+    artwork_file: localArtworkPath,
+  };
+  const existingIndex = manifest.items.findIndex((manifestItem) => manifestItem.spotify_uri === providerUri);
+
+  if (existingIndex >= 0) {
+    manifest.items[existingIndex] = {
+      ...manifest.items[existingIndex],
+      ...entry,
+    };
+  } else {
+    manifest.items.push(entry);
+  }
+
+  manifest.generated_at = new Date().toISOString();
+  fs.mkdirSync(SPOTIFY_ARTWORK_DIR, { recursive: true });
+  fs.writeFileSync(SPOTIFY_ARTWORK_MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+async function cacheSpotifyArtworkForMediaItem(item) {
+  const artworkUrl = item.artworkUrl || item.artwork_url || "";
+
+  if (!artworkUrl) {
+    return { ok: false, skipped: true, reason: "No artwork URL" };
+  }
+
+  const existingPath = item.localArtworkPath || item.local_artwork_path || "";
+
+  if (existingPath) {
+    return { ok: true, skipped: true, local_artwork_path: existingPath, reason: "Already cached" };
+  }
+
+  fs.mkdirSync(SPOTIFY_ARTWORK_DIR, { recursive: true });
+
+  const response = await fetch(artworkUrl, {
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Artwork download failed with HTTP ${response.status}`);
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  const fileName = artworkFileNameForMediaItem(item, contentType);
+  const filePath = path.join(SPOTIFY_ARTWORK_DIR, fileName);
+  const relativePath = path.relative(__dirname, filePath).replace(/\\/g, "/");
+  const buffer = Buffer.from(await response.arrayBuffer());
+
+  fs.writeFileSync(filePath, buffer);
+  writeSpotifyArtworkManifestEntry(item, relativePath);
+
+  return { ok: true, local_artwork_path: relativePath };
+}
+
+function getSpotifyArtworkManifestByUri() {
+  const manifest = readSpotifyArtworkManifest();
+  return new Map((manifest.items || []).map((item) => [item.spotify_uri, item]));
 }
 
 function mediaItemFromSpotifyAction(row, manifestByUri) {
@@ -1551,6 +1680,8 @@ async function importSpotifyPlaylist(uriOrUrl) {
   const importedAt = new Date().toISOString();
   let importedCount = 0;
   let skippedCount = 0;
+  let cachedArtworkCount = 0;
+  let failedArtworkCount = 0;
 
   for (const entry of entries) {
     const item = mediaItemFromSpotifyPlaylistEntry(entry, playlistInfo, importedAt);
@@ -1558,6 +1689,20 @@ async function importSpotifyPlaylist(uriOrUrl) {
     if (!item) {
       skippedCount += 1;
       continue;
+    }
+
+    try {
+      const artworkResult = await cacheSpotifyArtworkForMediaItem(item);
+
+      if (artworkResult.ok && artworkResult.local_artwork_path) {
+        item.localArtworkPath = artworkResult.local_artwork_path;
+
+        if (!artworkResult.skipped) {
+          cachedArtworkCount += 1;
+        }
+      }
+    } catch {
+      failedArtworkCount += 1;
     }
 
     upsertMediaItem(item);
@@ -1568,6 +1713,8 @@ async function importSpotifyPlaylist(uriOrUrl) {
     playlist: playlistInfo,
     imported_count: importedCount,
     skipped_count: skippedCount,
+    cached_artwork_count: cachedArtworkCount,
+    failed_artwork_count: failedArtworkCount,
     total_count: entries.length,
   };
 }
@@ -2592,6 +2739,44 @@ function getMediaItems(limit = 100) {
   return selectMediaItems.all(safeLimit).map(shapeMediaItem);
 }
 
+async function cacheMissingSpotifyArtwork(limit = 100) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  const items = selectMediaItemsMissingArtwork.all(safeLimit);
+  let cachedCount = 0;
+  let skippedCount = 0;
+  let failedCount = 0;
+  const failures = [];
+
+  for (const item of items) {
+    try {
+      const result = await cacheSpotifyArtworkForMediaItem(item);
+
+      if (result.ok && result.local_artwork_path) {
+        updateMediaItemArtworkStatement.run(result.local_artwork_path, new Date().toISOString(), item.id);
+        cachedCount += result.skipped ? 0 : 1;
+        skippedCount += result.skipped ? 1 : 0;
+      } else {
+        skippedCount += 1;
+      }
+    } catch (error) {
+      failedCount += 1;
+      failures.push({
+        id: item.id,
+        title: item.title,
+        error: error.message,
+      });
+    }
+  }
+
+  return {
+    checked_count: items.length,
+    cached_count: cachedCount,
+    skipped_count: skippedCount,
+    failed_count: failedCount,
+    failures,
+  };
+}
+
 function shapeCard(row) {
   return {
     id: row.id,
@@ -2992,12 +3177,34 @@ function saveLastSpotifyPlaylistImport(result) {
   }));
 }
 
+function getLastArtworkCacheResult() {
+  const raw = getSetting("spotify_last_artwork_cache", "");
+
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function saveLastArtworkCacheResult(result) {
+  setSetting("spotify_last_artwork_cache", JSON.stringify({
+    ...result,
+    cached_at: new Date().toISOString(),
+  }));
+}
+
 function renderSpotifyPlaylistImport(status) {
   const modeClass = status.authorized ? "armed" : "safe";
   const modeText = !status.configured ? "Needs app credentials" : status.authorized ? "Ready" : "Needs Spotify login";
   const loginLink = status.configured ? `<a class="button-link" href="/spotify/login">Connect Spotify</a>` : "";
   const lastImport = getLastSpotifyPlaylistImport();
   const lastPlaylistName = lastImport && lastImport.playlist && lastImport.playlist.name ? lastImport.playlist.name : "Spotify playlist";
+  const lastArtworkCache = getLastArtworkCacheResult();
 
   return `
     <div class="import-panel">
@@ -3009,6 +3216,11 @@ function renderSpotifyPlaylistImport(status) {
             ? `<span>Last import: ${escapeHtml(lastImport.imported_count)} saved, ${escapeHtml(lastImport.skipped_count)} skipped from ${escapeHtml(lastPlaylistName)} at ${escapeHtml(formatScanTime(lastImport.imported_at))}</span>`
             : `<span class="muted">No playlist imported yet.</span>`
         }
+        ${
+          lastArtworkCache
+            ? `<span>Last artwork cache: ${escapeHtml(lastArtworkCache.cached_count)} saved, ${escapeHtml(lastArtworkCache.failed_count)} failed at ${escapeHtml(formatScanTime(lastArtworkCache.cached_at))}</span>`
+            : `<span class="muted">No artwork cache run yet.</span>`
+        }
         ${loginLink}
       </div>
       <form class="playlist-import-form" method="post" action="/spotify/import-playlist">
@@ -3017,6 +3229,9 @@ function renderSpotifyPlaylistImport(status) {
           <input name="playlist_url" placeholder="https://open.spotify.com/playlist/..." maxlength="500" required>
         </label>
         <button type="submit">Import Playlist</button>
+      </form>
+      <form class="inline-form cache-artwork-form" method="post" action="/media/cache-artwork">
+        <button type="submit">Cache Missing Artwork</button>
       </form>
     </div>
   `;
@@ -3925,6 +4140,10 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         margin-top: 12px;
       }
 
+      .cache-artwork-form {
+        margin-top: 10px;
+      }
+
       .sonos-device-row-form {
         grid-template-columns: minmax(180px, 260px) minmax(240px, 360px) auto auto;
       }
@@ -4659,6 +4878,22 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/media/cache-artwork") {
+    try {
+      const payload = await readPayload(request);
+      const result = await cacheMissingSpotifyArtwork(payload.limit || 100);
+      saveLastArtworkCacheResult(result);
+      sendJson(response, 200, {
+        ok: true,
+        result,
+        media_items: getMediaItems(100),
+      });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/api/spotify/import-playlist") {
     try {
       const payload = await readPayload(request);
@@ -5136,6 +5371,17 @@ async function handleRequest(request, response) {
   if (request.method === "POST" && url.pathname === "/media/assign-next/cancel") {
     clearPendingMediaAssignment();
     redirect(response, "/media");
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/media/cache-artwork") {
+    try {
+      const result = await cacheMissingSpotifyArtwork(100);
+      saveLastArtworkCacheResult(result);
+      redirect(response, "/media");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
     return;
   }
 

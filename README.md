@@ -246,6 +246,19 @@ POST /api/media/assign-next
 POST /api/media/assign-next/cancel
 ```
 
+Playlist artwork caching:
+
+- Playlist import tries to cache Spotify artwork into `data/spotify-artwork/`.
+- The Media page has a `Cache Missing Artwork` button for older imports or failed downloads.
+- Successful caches update `media_items.local_artwork_path`.
+- Cached artwork is local data and is ignored by Git.
+
+Artwork cache API:
+
+```text
+POST /api/media/cache-artwork
+```
+
 Sonos actions can target a specific Sonos device or `Receiver default speaker`. Receiver default uses the `reader_id` on the scan to choose the speaker.
 
 `GET /api/actions/08-9F-69-C8`

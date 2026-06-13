@@ -14,6 +14,7 @@ const ESPHOME_SCAN_DEBOUNCE_MS = 2500;
 const TAGREADER_BUZZER_SWITCH_KEY = 1985256757;
 const SPOTIFY_REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI || `http://127.0.0.1:${PORT}/spotify/callback`;
 const SPOTIFY_SCOPES = [
+  "playlist-read-private",
   "user-read-playback-state",
   "user-modify-playback-state",
 ];
@@ -155,6 +156,10 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_receivers_reader_id
   ON receivers(reader_id);
 `);
+
+ensureColumn("media_items", "imported_from_provider_uri", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("media_items", "imported_from_title", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("media_items", "imported_at", "TEXT NOT NULL DEFAULT ''");
 
 const insertScan = db.prepare(`
   INSERT INTO scan_events (reader_id, tag_id, source, scanned_at)
@@ -361,10 +366,13 @@ const upsertMediaItemStatement = db.prepare(`
     artwork_url,
     local_artwork_path,
     duration_ms,
+    imported_from_provider_uri,
+    imported_from_title,
+    imported_at,
     created_at,
     updated_at
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(provider_uri) DO UPDATE SET
     source_url = excluded.source_url,
     title = excluded.title,
@@ -375,6 +383,18 @@ const upsertMediaItemStatement = db.prepare(`
     artwork_url = excluded.artwork_url,
     local_artwork_path = excluded.local_artwork_path,
     duration_ms = excluded.duration_ms,
+    imported_from_provider_uri = CASE
+      WHEN excluded.imported_from_provider_uri != '' THEN excluded.imported_from_provider_uri
+      ELSE media_items.imported_from_provider_uri
+    END,
+    imported_from_title = CASE
+      WHEN excluded.imported_from_title != '' THEN excluded.imported_from_title
+      ELSE media_items.imported_from_title
+    END,
+    imported_at = CASE
+      WHEN excluded.imported_at != '' THEN excluded.imported_at
+      ELSE media_items.imported_at
+    END,
     updated_at = excluded.updated_at
 `);
 
@@ -419,6 +439,15 @@ function getDefaultDatabasePath() {
   }
 
   return path.join(__dirname, "data", "kids_tunes.db");
+}
+
+function ensureColumn(tableName, columnName, columnDefinition) {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  const hasColumn = columns.some((column) => column.name === columnName);
+
+  if (!hasColumn) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`);
+  }
 }
 
 function sendJson(response, statusCode, payload) {
@@ -1018,6 +1047,38 @@ function spotifyMediaTypeFromUri(uri) {
   return parts.length >= 3 ? parts[1] : "";
 }
 
+function spotifyIdFromUri(uri, expectedType = "") {
+  const parts = String(uri || "").split(":");
+
+  if (parts.length < 3 || parts[0] !== "spotify") {
+    return "";
+  }
+
+  if (expectedType && parts[1] !== expectedType) {
+    return "";
+  }
+
+  return parts[2] || "";
+}
+
+function spotifyUrlForUri(uri) {
+  const parts = String(uri || "").split(":");
+
+  if (parts.length < 3 || parts[0] !== "spotify") {
+    return "";
+  }
+
+  return `https://open.spotify.com/${encodeURIComponent(parts[1])}/${encodeURIComponent(parts[2])}`;
+}
+
+function spotifyImageUrl(images) {
+  if (!Array.isArray(images) || !images.length) {
+    return "";
+  }
+
+  return images[0] && images[0].url ? images[0].url : "";
+}
+
 function getSpotifyArtworkManifestByUri() {
   const manifestPath = path.join(__dirname, "data", "spotify-artwork", "manifest.json");
 
@@ -1077,6 +1138,9 @@ function upsertMediaItem(item) {
     item.artworkUrl,
     item.localArtworkPath,
     item.durationMs,
+    item.importedFromProviderUri || "",
+    item.importedFromTitle || "",
+    item.importedAt || "",
     now,
     now,
   );
@@ -1218,6 +1282,123 @@ async function spotifyApiRequest(pathname, options = {}) {
 async function getSpotifyDevices() {
   const payload = await spotifyApiRequest("/me/player/devices");
   return payload.devices || [];
+}
+
+async function getSpotifyPlaylist(playlistId) {
+  return spotifyApiRequest(`/playlists/${encodeURIComponent(playlistId)}?fields=name,uri,external_urls`);
+}
+
+async function getSpotifyPlaylistItems(playlistId) {
+  const items = [];
+  let offset = 0;
+  let total = null;
+  const limit = 100;
+
+  do {
+    const payload = await spotifyApiRequest(
+      `/playlists/${encodeURIComponent(playlistId)}/tracks?limit=${limit}&offset=${offset}`,
+    );
+    const pageItems = Array.isArray(payload.items) ? payload.items : [];
+    items.push(...pageItems);
+    total = Number.isInteger(payload.total) ? payload.total : items.length;
+    if (!pageItems.length) {
+      break;
+    }
+    offset += pageItems.length;
+  } while (items.length < total);
+
+  return items;
+}
+
+function mediaItemFromSpotifyPlaylistEntry(entry, playlist, importedAt) {
+  const media = entry && entry.track ? entry.track : null;
+
+  if (!media || media.is_local) {
+    return null;
+  }
+
+  const mediaType = media.type;
+
+  if (mediaType !== "track" && mediaType !== "episode") {
+    return null;
+  }
+
+  const providerUri = normalizeSpotifyUri(media.uri) || (media.id ? `spotify:${mediaType}:${media.id}` : "");
+
+  if (!providerUri) {
+    return null;
+  }
+
+  const artistNames = mediaType === "track" && Array.isArray(media.artists)
+    ? media.artists.map((artist) => artist.name).filter(Boolean).join(", ")
+    : "";
+  const albumName = mediaType === "track" && media.album ? media.album.name || "" : "";
+  const showName = mediaType === "episode" && media.show ? media.show.name || "" : "";
+  const subtitle = artistNames || showName || albumName || "";
+  const artworkUrl = mediaType === "track"
+    ? spotifyImageUrl(media.album && media.album.images)
+    : spotifyImageUrl(media.images) || spotifyImageUrl(media.show && media.show.images);
+  const playlistUri = normalizeSpotifyUri(playlist.uri) || "";
+  const playlistTitle = playlist.name || playlistUri || "";
+
+  return {
+    provider: "spotify",
+    mediaType,
+    providerUri,
+    sourceUrl: media.external_urls && media.external_urls.spotify ? media.external_urls.spotify : spotifyUrlForUri(providerUri),
+    title: media.name || providerUri,
+    subtitle,
+    artistNames,
+    showName,
+    albumName,
+    artworkUrl,
+    localArtworkPath: "",
+    durationMs: Number.isInteger(media.duration_ms) ? media.duration_ms : null,
+    importedFromProviderUri: playlistUri,
+    importedFromTitle: playlistTitle,
+    importedAt,
+  };
+}
+
+async function importSpotifyPlaylist(uriOrUrl) {
+  const playlistUri = normalizeSpotifyUri(uriOrUrl);
+  const playlistId = spotifyIdFromUri(playlistUri, "playlist");
+
+  if (!playlistId) {
+    throw new Error("Paste a Spotify playlist URL or URI");
+  }
+
+  const playlist = await getSpotifyPlaylist(playlistId);
+  const playlistInfo = {
+    name: playlist.name || playlistUri,
+    uri: playlist.uri || playlistUri,
+    url: playlist.external_urls && playlist.external_urls.spotify
+      ? playlist.external_urls.spotify
+      : spotifyUrlForUri(playlistUri),
+  };
+  const entries = await getSpotifyPlaylistItems(playlistId);
+  const importedAt = new Date().toISOString();
+  let importedCount = 0;
+  let skippedCount = 0;
+
+  for (const entry of entries) {
+    const item = mediaItemFromSpotifyPlaylistEntry(entry, playlistInfo, importedAt);
+
+    if (!item) {
+      skippedCount += 1;
+      continue;
+    }
+
+    upsertMediaItem(item);
+    importedCount += 1;
+  }
+
+  return {
+    playlist: playlistInfo,
+    imported_count: importedCount,
+    skipped_count: skippedCount,
+    total_count: entries.length,
+  };
 }
 
 async function getSpotifyCurrentPlayback() {
@@ -2207,6 +2388,9 @@ function shapeMediaItem(row) {
     local_artwork_path: row.local_artwork_path,
     duration_ms: row.duration_ms,
     print_status: row.print_status,
+    imported_from_provider_uri: row.imported_from_provider_uri || "",
+    imported_from_title: row.imported_from_title || "",
+    imported_at: row.imported_at || "",
     assigned_card_count: Number(row.assigned_card_count) || 0,
     assigned_card_names: assignedCardNames,
     assigned_tag_ids: assignedTagIds,
@@ -2533,6 +2717,11 @@ function renderMediaLibrary(mediaItems) {
           <td>
             <span class="pill known">${escapeHtml(item.provider)}</span>
             <span class="small-text">${escapeHtml(item.media_type)}</span>
+            ${
+              item.imported_from_title
+                ? `<span class="small-text">Imported from ${escapeHtml(item.imported_from_title)}</span>`
+                : ""
+            }
           </td>
           <td>
             <code>${escapeHtml(item.provider_uri)}</code>
@@ -2571,6 +2760,57 @@ function renderMediaLibrary(mediaItems) {
         </thead>
         <tbody>${rows}</tbody>
       </table>
+    </div>
+  `;
+}
+
+function getLastSpotifyPlaylistImport() {
+  const raw = getSetting("spotify_last_playlist_import", "");
+
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function saveLastSpotifyPlaylistImport(result) {
+  setSetting("spotify_last_playlist_import", JSON.stringify({
+    ...result,
+    imported_at: new Date().toISOString(),
+  }));
+}
+
+function renderSpotifyPlaylistImport(status) {
+  const modeClass = status.authorized ? "armed" : "safe";
+  const modeText = !status.configured ? "Needs app credentials" : status.authorized ? "Ready" : "Needs Spotify login";
+  const loginLink = status.configured ? `<a class="button-link" href="/spotify/login">Connect Spotify</a>` : "";
+  const lastImport = getLastSpotifyPlaylistImport();
+  const lastPlaylistName = lastImport && lastImport.playlist && lastImport.playlist.name ? lastImport.playlist.name : "Spotify playlist";
+
+  return `
+    <div class="import-panel">
+      <div class="bridge-status">
+        <span>Spotify import: <span class="sonos-mode ${modeClass}">${escapeHtml(modeText)}</span></span>
+        <span>Required scope: <code>playlist-read-private</code></span>
+        ${
+          lastImport
+            ? `<span>Last import: ${escapeHtml(lastImport.imported_count)} saved, ${escapeHtml(lastImport.skipped_count)} skipped from ${escapeHtml(lastPlaylistName)} at ${escapeHtml(formatScanTime(lastImport.imported_at))}</span>`
+            : `<span class="muted">No playlist imported yet.</span>`
+        }
+        ${loginLink}
+      </div>
+      <form class="playlist-import-form" method="post" action="/spotify/import-playlist">
+        <label>
+          <span>Spotify playlist URL</span>
+          <input name="playlist_url" placeholder="https://open.spotify.com/playlist/..." maxlength="500" required>
+        </label>
+        <button type="submit">Import Playlist</button>
+      </form>
     </div>
   `;
 }
@@ -3398,6 +3638,7 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
       .esphome-form,
       .reader-test-form,
       .spotify-form,
+      .playlist-import-form,
       .sonos-device-row-form,
       .receiver-row-form {
         display: grid;
@@ -3442,6 +3683,11 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         margin-top: 12px;
       }
 
+      .playlist-import-form {
+        grid-template-columns: minmax(280px, 1fr) auto;
+        margin-top: 12px;
+      }
+
       .sonos-device-row-form {
         grid-template-columns: minmax(180px, 260px) minmax(240px, 360px) auto auto;
       }
@@ -3469,6 +3715,7 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
       .esphome-form span,
       .reader-test-form span,
       .spotify-form span,
+      .playlist-import-form span,
       .sonos-device-row-form span,
       .receiver-row-form span {
         display: block;
@@ -3662,6 +3909,7 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         .sonos-device-row-form,
         .receiver-row-form,
         .spotify-form,
+        .playlist-import-form,
         .action-form,
         .assign-form {
           grid-template-columns: 1fr;
@@ -3688,6 +3936,7 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         .esphome-form span,
         .reader-test-form span,
         .spotify-form span,
+        .playlist-import-form span,
         .sonos-device-row-form span,
         .receiver-row-form span,
         .small-text,
@@ -3860,11 +4109,22 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
 }
 
 function renderMediaPage() {
+  const spotifyStatus = getSpotifyStatus();
+
   return renderPageShell(
     "/media",
     "Media",
     "Tracks, episodes, artwork, card assignment status, and print status.",
     `
+      <section aria-label="Import Spotify playlist">
+        <div class="section-heading">
+          <h2>Import Spotify playlist</h2>
+        </div>
+        <div class="settings-panel">
+          ${renderSpotifyPlaylistImport(spotifyStatus)}
+        </div>
+      </section>
+
       <section aria-label="Media library">
         <div class="section-heading">
           <h2>Media library</h2>
@@ -4103,6 +4363,22 @@ async function handleRequest(request, response) {
       ok: true,
       media_items: getMediaItems(url.searchParams.get("limit") || 100),
     });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/spotify/import-playlist") {
+    try {
+      const payload = await readPayload(request);
+      const result = await importSpotifyPlaylist(payload.playlist_url || payload.playlist_uri || payload.url || payload.uri);
+      saveLastSpotifyPlaylistImport(result);
+      sendJson(response, 200, {
+        ok: true,
+        result,
+        media_items: getMediaItems(100),
+      });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message, spotify: getSpotifyStatus() });
+    }
     return;
   }
 
@@ -4531,6 +4807,18 @@ async function handleRequest(request, response) {
       redirect(response, "/");
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/spotify/import-playlist") {
+    try {
+      const payload = await readPayload(request);
+      const result = await importSpotifyPlaylist(payload.playlist_url || payload.playlist_uri || payload.url || payload.uri);
+      saveLastSpotifyPlaylistImport(result);
+      redirect(response, "/media");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message, spotify: getSpotifyStatus() });
     }
     return;
   }

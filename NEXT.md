@@ -196,6 +196,33 @@ The first UI cleanup pass has started:
 - Media, card, scan, and action-event tables have simple client-side search filters.
 - The Media library can show local Spotify artwork thumbnails through `/assets/spotify-artwork/...`.
 
+The Spotify playlist import foundation has started:
+
+- `/media` now has an "Import Spotify playlist" panel.
+- The app can import Spotify playlist tracks/episodes into the `media_items` table.
+- Imported media rows store playlist source fields:
+  - `imported_from_provider_uri`
+  - `imported_from_title`
+  - `imported_at`
+- Duplicate imports are safe because `media_items.provider_uri` is unique.
+- JSON API endpoint:
+
+```text
+POST /api/spotify/import-playlist
+```
+
+Example payload:
+
+```json
+{
+  "playlist_url": "https://open.spotify.com/playlist/..."
+}
+```
+
+Important: Spotify auth now requests `playlist-read-private`. After restarting with this code, reconnect Spotify once from the app so the token has the new playlist scope.
+
+Next playlist step: add a "assign next scanned card to this media item" workflow from `/media`, so a playlist item can become a physical card without manually copying URLs.
+
 ## Useful Checks
 
 Check app health:
@@ -248,15 +275,16 @@ curl.exe -s http://127.0.0.1:8787/api/spotify/devices
    - Show current/last playing item.
    - Keep admin setup separate from simple parent controls.
 9. Expand the media library into a full Spotify playlist-to-card assignment flow:
-   - Pick a Spotify playlist in the app.
-   - Import playlist items into the `media_items` table.
-   - Store Spotify URL/URI, title, artist/show, album, duration, artwork URL, and local artwork path.
+   - Foundation started: paste a Spotify playlist URL in `/media`.
+   - Foundation started: import playlist items into the `media_items` table.
+   - Foundation started: store Spotify URL/URI, title, artist/show, album, duration, and artwork URL.
+   - Next: fetch/cache imported artwork locally.
    - Show tracks/episodes from that playlist with metadata.
    - Show assignment status for each item, such as unassigned, assigned, or retired.
    - Show print status for each item, such as not printed, queued for print, PDF generated, or printed.
    - Tap an "assign next scanned card" button beside a track.
    - The next card scanned is assigned to that Spotify item.
-   - This will likely need extra Spotify read scopes beyond the current playback-only scopes.
+   - Spotify now requests `playlist-read-private`, so users must reconnect Spotify after restart.
 10. Add printable artwork labels/card sheets:
    - Use fetched Spotify artwork.
    - Generate a PDF sheet sized for card stickers/labels.

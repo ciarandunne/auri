@@ -218,6 +218,18 @@ npm start
 
 Then open the UI and use the Spotify section to connect the account. The first Spotify test can target a listed Spotify Connect device such as an Echo speaker. Spotify track, album, playlist, and episode URLs are accepted. The Spotify section also stores the default device ID and a safe start volume, which defaults to `30`.
 
+The Media page can also import a Spotify playlist into the local media library. After this feature was added, Spotify auth requests `playlist-read-private`; reconnect Spotify once after restarting so the saved token has the playlist scope.
+
+Playlist import API:
+
+`POST /api/spotify/import-playlist`
+
+```json
+{
+  "playlist_url": "https://open.spotify.com/playlist/..."
+}
+```
+
 Sonos actions can target a specific Sonos device or `Receiver default speaker`. Receiver default uses the `reader_id` on the scan to choose the speaker.
 
 `GET /api/actions/08-9F-69-C8`

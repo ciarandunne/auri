@@ -105,6 +105,7 @@ http://127.0.0.1:8787/spotify/callback
 - Physical RFID cards scan and play Spotify on `Eabha's Office Dot`.
 - Spotify device-name fallback is implemented.
 - ESPHome reader watchdog is implemented in code.
+- `/media` is now the Tracks page; Spotify management has moved to `/spotify`.
 
 Next validation after any restart:
 
@@ -117,7 +118,7 @@ npm.cmd start
 
 2. Open `http://127.0.0.1:8787/reader` and confirm the watchdog shows on.
 3. Open `http://127.0.0.1:8787/api/spotify/devices` once to refresh/learn the current Echo Dot device ID/name.
-4. Open `http://127.0.0.1:8787/media` and confirm the Spotify section shows `Connected account: ciaran.dunne2`.
+4. Open `http://127.0.0.1:8787/spotify` and confirm the Spotify section shows `Connected account: ciaran.dunne2`.
 5. Tap one physical card and confirm playback.
 6. If Spotify import/playback reports `invalid_client`, click `Connect Spotify` again. If Spotify shows `redirect_uri: Not matching configuration`, add the callback URL above to the Spotify Developer app.
 7. If a card tap does not play, check recent scans/action events:

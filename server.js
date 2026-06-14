@@ -3453,21 +3453,48 @@ function renderSpotifyPlaylistImport(status) {
 
   return `
     <div class="import-panel">
-      <div class="bridge-status">
-        <span>Spotify import: <span class="sonos-mode ${modeClass}">${escapeHtml(modeText)}</span></span>
-        <span>Connected account: ${accountLabel ? `<code>${escapeHtml(accountLabel)}</code>` : `<span class="muted">unknown</span>`}</span>
+      <div class="spotify-summary-grid">
+        <div class="spotify-summary-item">
+          <span>Import status</span>
+          <strong><span class="sonos-mode ${modeClass}">${escapeHtml(modeText)}</span></strong>
+        </div>
+        <div class="spotify-summary-item">
+          <span>Connected account</span>
+          <strong>${accountLabel ? `<code>${escapeHtml(accountLabel)}</code>` : `<span class="muted">unknown</span>`}</strong>
+        </div>
+        <div class="spotify-summary-item">
+          <span>Required scope</span>
+          <strong><code>playlist-read-private</code></strong>
+        </div>
+        <div class="spotify-summary-item wide">
+          <span>Last import</span>
+          <strong>${
+            lastImport
+              ? `${escapeHtml(lastImport.imported_count)} saved, ${escapeHtml(lastImport.skipped_count)} skipped from ${escapeHtml(lastPlaylistName)}`
+              : `<span class="muted">No playlist imported yet</span>`
+          }</strong>
+          ${
+            lastImport
+              ? `<small>${escapeHtml(formatScanTime(lastImport.imported_at))}</small>`
+              : ""
+          }
+        </div>
+        <div class="spotify-summary-item wide">
+          <span>Artwork cache</span>
+          <strong>${
+            lastArtworkCache
+              ? `${escapeHtml(lastArtworkCache.cached_count)} saved, ${escapeHtml(lastArtworkCache.failed_count)} failed`
+              : `<span class="muted">No artwork cache run yet</span>`
+          }</strong>
+          ${
+            lastArtworkCache
+              ? `<small>${escapeHtml(formatScanTime(lastArtworkCache.cached_at))}</small>`
+              : ""
+          }
+        </div>
+      </div>
+      <div class="spotify-actions-row">
         ${refreshAccountForm}
-        <span>Required scope: <code>playlist-read-private</code></span>
-        ${
-          lastImport
-            ? `<span>Last import: ${escapeHtml(lastImport.imported_count)} saved, ${escapeHtml(lastImport.skipped_count)} skipped from ${escapeHtml(lastPlaylistName)} at ${escapeHtml(formatScanTime(lastImport.imported_at))}</span>`
-            : `<span class="muted">No playlist imported yet.</span>`
-        }
-        ${
-          lastArtworkCache
-            ? `<span>Last artwork cache: ${escapeHtml(lastArtworkCache.cached_count)} saved, ${escapeHtml(lastArtworkCache.failed_count)} failed at ${escapeHtml(formatScanTime(lastArtworkCache.cached_at))}</span>`
-            : `<span class="muted">No artwork cache run yet.</span>`
-        }
         ${loginLink}
       </div>
       <form class="playlist-import-form" method="post" action="/spotify/import-playlist">
@@ -3477,7 +3504,7 @@ function renderSpotifyPlaylistImport(status) {
         </label>
         <button type="submit">Import Playlist</button>
       </form>
-      <form class="inline-form cache-artwork-form" method="post" action="/media/cache-artwork">
+      <form class="inline-form cache-artwork-form" method="post" action="/spotify/cache-artwork">
         <button type="submit">Cache Missing Artwork</button>
       </form>
     </div>
@@ -3842,15 +3869,40 @@ function renderSpotifySettings(status) {
     : "";
 
   return `
-    <div class="bridge-status">
-      <span>Spotify: <span class="sonos-mode ${modeClass}">${escapeHtml(modeText)}</span></span>
-      <span>Connected account: ${accountLabel ? `<code>${escapeHtml(accountLabel)}</code>` : `<span class="muted">unknown</span>`}</span>
+    <div class="spotify-summary-grid">
+      <div class="spotify-summary-item">
+        <span>Auth</span>
+        <strong><span class="sonos-mode ${modeClass}">${escapeHtml(modeText)}</span></strong>
+      </div>
+      <div class="spotify-summary-item">
+        <span>Connected account</span>
+        <strong>${accountLabel ? `<code>${escapeHtml(accountLabel)}</code>` : `<span class="muted">unknown</span>`}</strong>
+      </div>
+      <div class="spotify-summary-item">
+        <span>Default device</span>
+        <strong>${defaultDeviceName ? `<code>${escapeHtml(defaultDeviceName)}</code>` : `<span class="muted">name not saved yet</span>`}</strong>
+      </div>
+      <div class="spotify-summary-item">
+        <span>Start volume</span>
+        <strong><code>${startVolumeValue ? `${escapeHtml(startVolumeValue)}%` : "unchanged"}</code></strong>
+      </div>
+      <div class="spotify-summary-item wide">
+        <span>Redirect URI</span>
+        <strong><code>${escapeHtml(status.redirect_uri)}</code></strong>
+      </div>
+      <div class="spotify-summary-item wide">
+        <span>Scopes</span>
+        <strong><code>${escapeHtml(status.scopes.join(" "))}</code></strong>
+      </div>
+      ${status.expires_at ? `
+        <div class="spotify-summary-item">
+          <span>Token expires</span>
+          <strong>${escapeHtml(formatScanTime(status.expires_at))}</strong>
+        </div>
+      ` : ""}
+    </div>
+    <div class="spotify-actions-row">
       ${refreshAccountForm}
-      <span>Default device: ${defaultDeviceName ? `<code>${escapeHtml(defaultDeviceName)}</code>` : `<span class="muted">name not saved yet</span>`}</span>
-      <span>Start volume: <code>${startVolumeValue ? `${escapeHtml(startVolumeValue)}%` : "unchanged"}</code></span>
-      <span>Redirect URI: <code>${escapeHtml(status.redirect_uri)}</code></span>
-      <span>Scopes: <code>${escapeHtml(status.scopes.join(" "))}</code></span>
-      ${status.expires_at ? `<span>Token expires: ${escapeHtml(formatScanTime(status.expires_at))}</span>` : ""}
       ${loginLink}
     </div>
     <form class="spotify-form" method="post" action="/settings/spotify-playback">
@@ -3868,6 +3920,55 @@ function renderSpotifySettings(status) {
       </label>
       <button type="submit">Save Spotify</button>
     </form>
+  `;
+}
+
+function renderSpotifyDevices(devices, status, error = "") {
+  if (error) {
+    return `<div class="empty error-text">${escapeHtml(error)}</div>`;
+  }
+
+  if (!devices.length) {
+    return `<div class="empty">No Spotify Connect devices are currently visible.</div>`;
+  }
+
+  const defaultDeviceId = status.default_device_id || "";
+  const defaultDeviceName = status.default_device_name || "";
+  const rows = devices
+    .map((device) => {
+      const isDefault = device.id === defaultDeviceId || spotifyDeviceNameMatches(device.name, defaultDeviceName);
+      return `
+        <tr>
+          <td>
+            <strong>${escapeHtml(device.name || "Unnamed device")}</strong>
+            ${isDefault ? `<span class="pill known">Default</span>` : ""}
+          </td>
+          <td>${escapeHtml(device.type || "")}</td>
+          <td>${device.is_active ? `<span class="pill known">Active</span>` : `<span class="muted">Idle</span>`}</td>
+          <td>${device.supports_volume ? "Yes" : "No"}</td>
+          <td>${Number.isInteger(device.volume_percent) ? `${escapeHtml(device.volume_percent)}%` : `<span class="muted">unknown</span>`}</td>
+          <td><code>${escapeHtml(device.id || "")}</code></td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Device</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Volume API</th>
+            <th>Volume</th>
+            <th>Spotify ID</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
   `;
 }
 
@@ -3950,7 +4051,8 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
   const actionEventCount = countActionEvents.get().action_event_count;
   const readerStatus = getEspHomeBridgeStatus();
   const navItems = [
-    ["/media", "Media", mediaItems.length],
+    ["/media", "Tracks", mediaItems.length],
+    ["/spotify", "Spotify", getSpotifyStatus().authorized ? "Ready" : "Login"],
     ["/cards", "Cards", cardCount],
     ["/activity", "Activity", actionEventCount],
     ["/devices", "Devices", receivers.length],
@@ -4107,7 +4209,8 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
 
       .activity-grid,
       .devices-grid,
-      .reader-grid {
+      .reader-grid,
+      .spotify-management-grid {
         display: grid;
         gap: 16px;
         align-items: start;
@@ -4123,6 +4226,10 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
 
       .reader-grid {
         grid-template-columns: minmax(0, 1fr) minmax(360px, 0.8fr);
+      }
+
+      .spotify-management-grid {
+        grid-template-columns: minmax(0, 1fr) minmax(420px, 0.85fr);
       }
 
       .grid-full {
@@ -4390,7 +4497,47 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
       }
 
       .spotify-form {
-        grid-template-columns: minmax(260px, 1fr) minmax(120px, 160px) auto;
+        grid-template-columns: minmax(260px, 1fr) minmax(220px, 0.8fr) minmax(120px, 160px) auto;
+        margin-top: 12px;
+      }
+
+      .spotify-summary-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .spotify-summary-item {
+        min-width: 0;
+        border: 1px solid #e0e5ea;
+        border-radius: 4px;
+        padding: 9px 10px;
+        background: #ffffff;
+      }
+
+      .spotify-summary-item.wide {
+        grid-column: 1 / -1;
+      }
+
+      .spotify-summary-item span,
+      .spotify-summary-item small {
+        display: block;
+        color: #66727f;
+        font-size: 0.72rem;
+      }
+
+      .spotify-summary-item strong {
+        display: block;
+        margin-top: 3px;
+        font-size: 0.9rem;
+        font-weight: 650;
+        overflow-wrap: anywhere;
+      }
+
+      .spotify-actions-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
         margin-top: 12px;
       }
 
@@ -4638,7 +4785,12 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
 
         .activity-grid,
         .devices-grid,
-        .reader-grid {
+        .reader-grid,
+        .spotify-management-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .spotify-summary-grid {
           grid-template-columns: 1fr;
         }
 
@@ -4694,7 +4846,8 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         section,
         .status,
         .page-nav,
-        .section-tools {
+        .section-tools,
+        .spotify-summary-item {
           background: #18212a;
           border-color: #2b3642;
         }
@@ -4859,30 +5012,66 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
 }
 
 function renderMediaPage() {
-  const spotifyStatus = getSpotifyStatus();
   const pendingAssignment = getPendingMediaAssignment();
 
   return renderPageShell(
     "/media",
-    "Media",
-    "Tracks, episodes, artwork, card assignment status, and print status.",
+    "Tracks",
+    "Imported tracks and episodes, card assignment status, and print status.",
     `
-      <section aria-label="Import Spotify playlist">
+      <section aria-label="Track library">
         <div class="section-heading">
-          <h2>Import Spotify playlist</h2>
-        </div>
-        <div class="settings-panel">
-          ${renderSpotifyPlaylistImport(spotifyStatus)}
-        </div>
-      </section>
-
-      <section aria-label="Media library">
-        <div class="section-heading">
-          <h2>Media library</h2>
+          <h2>Track library</h2>
         </div>
         ${renderPendingMediaAssignment(pendingAssignment)}
         ${renderMediaLibrary(getMediaItems(100), pendingAssignment)}
       </section>
+    `,
+  );
+}
+
+async function renderSpotifyPage() {
+  let devices = [];
+  let devicesError = "";
+
+  try {
+    devices = await getSpotifyDevices();
+  } catch (error) {
+    devicesError = error.message;
+  }
+
+  return renderPageShell(
+    "/spotify",
+    "Spotify",
+    "Playlist import, account status, and playback target management.",
+    `
+      <div class="spotify-management-grid">
+        <section aria-label="Spotify account and playback target">
+          <div class="section-heading">
+            <h2>Account and playback</h2>
+          </div>
+          <div class="settings-panel">
+            ${renderSpotifySettings(getSpotifyStatus())}
+          </div>
+        </section>
+
+        <section aria-label="Import Spotify playlist">
+          <div class="section-heading">
+            <h2>Playlist import</h2>
+          </div>
+          <div class="settings-panel">
+            ${renderSpotifyPlaylistImport(getSpotifyStatus())}
+          </div>
+        </section>
+
+        <section aria-label="Spotify devices" class="grid-full">
+          <div class="section-heading">
+            <h2>Visible devices</h2>
+            <a class="button-link" href="/api/spotify/devices">Refresh Devices</a>
+          </div>
+          ${renderSpotifyDevices(devices, getSpotifyStatus(), devicesError)}
+        </section>
+      </div>
     `,
   );
 }
@@ -4935,12 +5124,11 @@ function renderDevicesPage() {
   const sonosSettings = getSonosSettings();
   const sonosDevices = getSonosDevices();
   const receivers = getReceivers();
-  const spotifyStatus = getSpotifyStatus();
 
   return renderPageShell(
     "/devices",
     "Devices",
-    "Receivers, speakers, and Spotify playback target settings.",
+    "Receivers and speaker settings.",
     `
       <div class="devices-grid">
         <section aria-label="Receivers" class="grid-full">
@@ -4952,16 +5140,7 @@ function renderDevicesPage() {
           </div>
         </section>
 
-        <section aria-label="Spotify settings">
-          <div class="section-heading">
-            <h2>Spotify</h2>
-          </div>
-          <div class="settings-panel">
-            ${renderSpotifySettings(spotifyStatus)}
-          </div>
-        </section>
-
-        <section aria-label="Sonos settings">
+        <section aria-label="Sonos settings" class="grid-full">
           <div class="section-heading">
             <h2>Sonos devices</h2>
           </div>
@@ -5033,6 +5212,11 @@ async function handleRequest(request, response) {
 
   if (request.method === "GET" && url.pathname === "/media") {
     sendHtml(response, renderMediaPage());
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/spotify") {
+    sendHtml(response, await renderSpotifyPage());
     return;
   }
 
@@ -5640,7 +5824,7 @@ async function handleRequest(request, response) {
       const payload = await readPayload(request);
       const result = await importSpotifyPlaylist(payload.playlist_url || payload.playlist_uri || payload.url || payload.uri);
       saveLastSpotifyPlaylistImport(result);
-      redirect(response, "/media");
+      redirect(response, "/spotify");
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error.message, spotify: getSpotifyStatus() });
     }
@@ -5675,6 +5859,17 @@ async function handleRequest(request, response) {
       const result = await cacheMissingSpotifyArtwork(100);
       saveLastArtworkCacheResult(result);
       redirect(response, "/media");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/spotify/cache-artwork") {
+    try {
+      const result = await cacheMissingSpotifyArtwork(100);
+      saveLastArtworkCacheResult(result);
+      redirect(response, "/spotify");
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error.message });
     }
@@ -5746,7 +5941,7 @@ async function handleRequest(request, response) {
       }
 
       saveSpotifyPlaybackSettings(settings);
-      redirect(response, "/");
+      redirect(response, "/spotify");
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error.message });
     }
@@ -5756,7 +5951,7 @@ async function handleRequest(request, response) {
   if (request.method === "POST" && url.pathname === "/spotify/refresh-account") {
     try {
       await refreshSpotifyAccountProfile();
-      redirect(response, "/media");
+      redirect(response, "/spotify");
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error.message, spotify: getSpotifyStatus() });
     }

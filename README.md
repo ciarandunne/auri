@@ -62,6 +62,8 @@ Known cards can also be given fake actions from the Known cards section. When a 
 Sonos commands only send to a real speaker after Sonos is enabled and a target Sonos device is added in the Sonos devices section.
 Receivers map a `reader_id` to a friendly profile, child name, default Sonos device, and later a Spotify account.
 
+The Tracks page is for imported tracks/episodes and card assignment. Spotify account status, playlist import, artwork caching, playback target settings, and visible Spotify devices live on the Spotify page.
+
 The ESPHome reader bridge can be enabled from the browser UI. For the current tag reader, use host/IP `192.168.5.87` and reader ID `tagreader-c6c6e4`. The bridge listens to ESPHome logs and Home Assistant service/event messages. If it detects a tag ID, it creates a normal scan event with source `esphome`.
 
 The bridge has a watchdog. It reconnects automatically if the ESPHome connection reports `disconnected` or `error`, if a connection attempt gets stuck, or after a long scheduled refresh interval. The Reader page also has a `Reconnect Reader` button for a manual reconnect without restarting Kids Tunes.

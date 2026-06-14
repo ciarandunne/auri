@@ -528,7 +528,13 @@ curl.exe -s http://127.0.0.1:8787/api/spotify/devices
 17. Later, move toward Synology Docker deployment for always-on home use.
 18. Test M5Dial RFID receiver firmware, starting with ESPHome and falling back to Arduino/PlatformIO if needed.
 19. Later, add a second receiver profile for Liam while keeping one shared card catalog.
-20. Later, support receiver-specific Spotify accounts and speakers while preserving the same card-to-content mapping.
+20. Add Spotify multi-account support:
+   - Use `ciaran.dunne2` as the library/import account for playlists and metadata.
+   - Create/connect a Spotify playback account for Eabha.
+   - Create/connect a Spotify playback account for Liam.
+   - Link each receiver to its child playback account and default speaker.
+   - Preserve one shared card/content mapping so the same card triggers the same track/story on either receiver.
+   - See `feature-packs/spotify-multi-account/`.
 
 ## Deployment Direction
 

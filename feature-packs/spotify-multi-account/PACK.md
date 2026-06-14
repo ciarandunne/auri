@@ -8,10 +8,10 @@ Support one parent Spotify account for managing/importing playlists, while each 
 
 Target model:
 
-- Ciaran account owns/manages source playlists.
-- Kids Tunes imports track/episode metadata from Ciaran's playlists.
-- Eabha receiver plays through Eabha's Spotify account and speaker.
-- Liam receiver plays through Liam's Spotify account and speaker.
+- `ciaran.dunne2` owns/manages source playlists.
+- Kids Tunes imports track/episode metadata from `ciaran.dunne2` playlists.
+- Eabha receiver plays through Eabha's own Spotify account and speaker.
+- Liam receiver plays through Liam's own Spotify account and speaker.
 - The same physical card/content mapping can work on both receivers.
 
 ## Design Position
@@ -84,3 +84,16 @@ The scan/playback code should use the receiver's `spotify_account_id`.
 7. Set Ciaran account as library account.
 8. Link receiver profiles to playback accounts.
 9. Test one receiver/account at a time.
+
+## Current Decision
+
+Use `ciaran.dunne2` as the library/import account. This is the account where playlists will be created and edited on the go.
+
+Later, create/connect separate Spotify playback accounts for Eabha and Liam. Each receiver should select:
+
+- a child profile;
+- a playback Spotify account;
+- a default speaker/device;
+- safety settings such as start/max volume.
+
+The same card should point to the same content everywhere. The receiver decides which Spotify account and speaker are used for playback.

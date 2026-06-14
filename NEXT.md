@@ -520,6 +520,9 @@ curl.exe -s http://127.0.0.1:8787/api/spotify/devices
    - Group media into collections such as Deep Blue Sea, Bedtime, Disney, Christmas, and favorites.
    - Use collections for browsing, filtering, printable labels, and playlist/card assignment.
 14. Make the app automatically recover when a saved Spotify device ID changes by matching the Echo Dot by name.
+   - Implemented foundation: Kids Tunes now stores `spotify_default_device_name`.
+   - Playback/pause/volume commands resolve the current Spotify device ID from the saved name if the old ID disappears.
+   - Next validation: create the local `.env` file, restart the app, open Spotify devices once, confirm the default device name is learned, then test a card.
 15. Add a Windows auto-start option so the app does not depend on manually running `npm.cmd start`.
 16. Add an admin restart/control option once the app has a proper runner:
    - Prefer a process manager, Windows service/task, or Docker restart policy.

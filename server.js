@@ -824,10 +824,11 @@ function normalizeReceiverUpdate(payload) {
 function normalizeEspHomeSettings(payload) {
   const host = normalizeSonosHost(payload.esphome_host || payload.host);
   const readerId =
-    typeof payload.reader_id === "string" && payload.reader_id.trim()
-      ? payload.reader_id.trim()
+    typeof (payload.esphome_reader_id || payload.reader_id) === "string" &&
+    (payload.esphome_reader_id || payload.reader_id).trim()
+      ? (payload.esphome_reader_id || payload.reader_id).trim()
       : host;
-  const enabled = normalizeEnabled(payload.esphome_enabled);
+  const enabled = normalizeEnabled(payload.esphome_enabled ?? payload.enabled);
 
   if (!host || host.length > 255) {
     return { error: "esphome_host is required and must be 255 characters or fewer" };
@@ -1009,9 +1010,22 @@ function getSpotifyStatus() {
     redirect_uri: config.redirectUri,
     scopes: SPOTIFY_SCOPES,
     default_device_id: getSetting("spotify_default_device_id", ""),
+    default_device_name: getSpotifyDefaultDeviceName(),
     start_volume_percent: getSpotifyStartVolumePercent(),
     account: getSpotifyAccountSummary(),
   };
+}
+
+function getSpotifyDefaultDeviceName() {
+  return getSetting("spotify_default_device_name", "");
+}
+
+function normalizeSpotifyDeviceName(value, fallback = "") {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  return typeof value === "string" ? value.trim() : fallback;
 }
 
 function normalizeSpotifyVolumePercent(value, fallback = "") {
@@ -1039,21 +1053,30 @@ function normalizeSpotifyPlaybackSettings(payload) {
     typeof payload.default_device_id === "string" && payload.default_device_id.trim()
       ? payload.default_device_id.trim()
       : "";
+  const defaultDeviceName =
+    typeof payload.default_device_name === "string"
+      ? normalizeSpotifyDeviceName(payload.default_device_name)
+      : getSpotifyDefaultDeviceName();
   const startVolumePercent = normalizeSpotifyVolumePercent(payload.start_volume_percent, "");
 
   if (defaultDeviceId.length > 200) {
     return { error: "default_device_id must be 200 characters or fewer" };
   }
 
+  if (defaultDeviceName.length > 200) {
+    return { error: "default_device_name must be 200 characters or fewer" };
+  }
+
   if (startVolumePercent === null) {
     return { error: "start_volume_percent must be a whole number from 0 to 100, or blank" };
   }
 
-  return { defaultDeviceId, startVolumePercent };
+  return { defaultDeviceId, defaultDeviceName, startVolumePercent };
 }
 
 function saveSpotifyPlaybackSettings(settings) {
   setSetting("spotify_default_device_id", settings.defaultDeviceId);
+  setSetting("spotify_default_device_name", settings.defaultDeviceName);
   setSetting("spotify_start_volume_percent", settings.startVolumePercent === "" ? "" : String(settings.startVolumePercent));
   return getSpotifyStatus();
 }
@@ -1644,7 +1667,69 @@ async function spotifyApiRequest(pathname, options = {}) {
 
 async function getSpotifyDevices() {
   const payload = await spotifyApiRequest("/me/player/devices");
-  return payload.devices || [];
+  const devices = payload.devices || [];
+  rememberSpotifyDefaultDeviceName(devices);
+  return devices;
+}
+
+function spotifyDeviceNameMatches(left, right) {
+  return normalizeSpotifyDeviceName(left).toLowerCase() === normalizeSpotifyDeviceName(right).toLowerCase();
+}
+
+function findSpotifyDeviceById(devices, deviceId) {
+  const normalizedId = typeof deviceId === "string" ? deviceId.trim() : "";
+  if (!normalizedId) {
+    return null;
+  }
+
+  return devices.find((device) => device.id === normalizedId) || null;
+}
+
+function findSpotifyDeviceByName(devices, deviceName) {
+  const normalizedName = normalizeSpotifyDeviceName(deviceName);
+  if (!normalizedName) {
+    return null;
+  }
+
+  const matches = devices.filter((device) => spotifyDeviceNameMatches(device.name, normalizedName));
+  return matches.find((device) => device.is_active) || matches.find((device) => !device.is_restricted) || matches[0] || null;
+}
+
+function rememberSpotifyDefaultDeviceName(devices, deviceId = getSetting("spotify_default_device_id", "")) {
+  const device = findSpotifyDeviceById(devices, deviceId);
+  if (!device || !device.name) {
+    return;
+  }
+
+  if (getSpotifyDefaultDeviceName() !== device.name) {
+    setSetting("spotify_default_device_name", device.name);
+  }
+}
+
+async function resolveSpotifyPlaybackDeviceId(deviceId = getSetting("spotify_default_device_id", "")) {
+  const requestedDeviceId = typeof deviceId === "string" ? deviceId.trim() : "";
+  const savedDeviceName = getSpotifyDefaultDeviceName();
+
+  if (!requestedDeviceId && !savedDeviceName) {
+    return "";
+  }
+
+  const devices = await getSpotifyDevices();
+  const requestedDevice = findSpotifyDeviceById(devices, requestedDeviceId);
+
+  if (requestedDevice) {
+    rememberSpotifyDefaultDeviceName(devices, requestedDeviceId);
+    return requestedDeviceId;
+  }
+
+  const namedDevice = findSpotifyDeviceByName(devices, savedDeviceName);
+  if (!namedDevice) {
+    return requestedDeviceId;
+  }
+
+  setSetting("spotify_default_device_id", namedDevice.id);
+  setSetting("spotify_default_device_name", namedDevice.name);
+  return namedDevice.id;
 }
 
 async function getSpotifyPlaylist(playlistId) {
@@ -1920,16 +2005,17 @@ async function sendSpotifyPlay(uriOrUrl, deviceId = getSetting("spotify_default_
     throw new Error("Spotify playback needs a Spotify track, album, playlist, or episode URI/URL");
   }
 
-  const playbackPath = deviceId ? `/me/player/play?device_id=${encodeURIComponent(deviceId)}` : "/me/player/play";
+  const resolvedDeviceId = await resolveSpotifyPlaybackDeviceId(deviceId);
+  const playbackPath = resolvedDeviceId ? `/me/player/play?device_id=${encodeURIComponent(resolvedDeviceId)}` : "/me/player/play";
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    if (deviceId) {
-      await sendSpotifyTransferPlayback(deviceId);
+    if (resolvedDeviceId) {
+      await sendSpotifyTransferPlayback(resolvedDeviceId);
       await wait(1000);
     }
 
     if (startVolumePercent !== "") {
-      await sendSpotifySetVolume(startVolumePercent, deviceId);
+      await sendSpotifySetVolume(startVolumePercent, resolvedDeviceId);
       await wait(250);
     }
 
@@ -1938,13 +2024,14 @@ async function sendSpotifyPlay(uriOrUrl, deviceId = getSetting("spotify_default_
       body,
     });
 
-    const verification = await waitForSpotifyPlaybackStart(uri, deviceId);
+    const verification = await waitForSpotifyPlaybackStart(uri, resolvedDeviceId);
 
     if (verification.ok) {
       return {
         ok: true,
         uri,
-        device_id: deviceId,
+        device_id: resolvedDeviceId,
+        device_name: getSpotifyDefaultDeviceName(),
         start_volume_percent: startVolumePercent,
         verified: true,
         retry_count: attempt - 1,
@@ -1974,6 +2061,7 @@ async function sendSpotifyTransferPlayback(deviceId, play = false) {
 
 async function sendSpotifySetVolume(volumePercent, deviceId = getSetting("spotify_default_device_id", "")) {
   const normalizedVolume = normalizeSpotifyVolumePercent(volumePercent);
+  const resolvedDeviceId = await resolveSpotifyPlaybackDeviceId(deviceId);
 
   if (normalizedVolume === null || normalizedVolume === "") {
     throw new Error("Spotify volume must be a whole number from 0 to 100");
@@ -1981,23 +2069,24 @@ async function sendSpotifySetVolume(volumePercent, deviceId = getSetting("spotif
 
   const volumePath =
     `/me/player/volume?volume_percent=${encodeURIComponent(normalizedVolume)}` +
-    (deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : "");
+    (resolvedDeviceId ? `&device_id=${encodeURIComponent(resolvedDeviceId)}` : "");
 
   await spotifyApiRequest(volumePath, {
     method: "PUT",
   });
 
-  return { ok: true, volume_percent: normalizedVolume, device_id: deviceId };
+  return { ok: true, volume_percent: normalizedVolume, device_id: resolvedDeviceId };
 }
 
 async function sendSpotifyPause(deviceId = getSetting("spotify_default_device_id", "")) {
-  const pausePath = deviceId ? `/me/player/pause?device_id=${encodeURIComponent(deviceId)}` : "/me/player/pause";
+  const resolvedDeviceId = await resolveSpotifyPlaybackDeviceId(deviceId);
+  const pausePath = resolvedDeviceId ? `/me/player/pause?device_id=${encodeURIComponent(resolvedDeviceId)}` : "/me/player/pause";
 
   await spotifyApiRequest(pausePath, {
     method: "PUT",
   });
 
-  return { ok: true, device_id: deviceId };
+  return { ok: true, device_id: resolvedDeviceId };
 }
 
 // A restart should not make the next card scan look like a second tap.
@@ -3651,6 +3740,7 @@ function renderSpotifySettings(status) {
   const loginLink = status.configured ? `<a class="button-link" href="/spotify/login">Connect Spotify</a>` : "";
   const startVolumeValue = status.start_volume_percent === "" ? "" : String(status.start_volume_percent);
   const accountLabel = status.account.display_name || status.account.id || "";
+  const defaultDeviceName = status.default_device_name || "";
   const refreshAccountForm = status.authorized
     ? `<form class="inline-form" method="post" action="/spotify/refresh-account"><button type="submit">Refresh Account</button></form>`
     : "";
@@ -3660,6 +3750,7 @@ function renderSpotifySettings(status) {
       <span>Spotify: <span class="sonos-mode ${modeClass}">${escapeHtml(modeText)}</span></span>
       <span>Connected account: ${accountLabel ? `<code>${escapeHtml(accountLabel)}</code>` : `<span class="muted">unknown</span>`}</span>
       ${refreshAccountForm}
+      <span>Default device: ${defaultDeviceName ? `<code>${escapeHtml(defaultDeviceName)}</code>` : `<span class="muted">name not saved yet</span>`}</span>
       <span>Start volume: <code>${startVolumeValue ? `${escapeHtml(startVolumeValue)}%` : "unchanged"}</code></span>
       <span>Redirect URI: <code>${escapeHtml(status.redirect_uri)}</code></span>
       <span>Scopes: <code>${escapeHtml(status.scopes.join(" "))}</code></span>
@@ -3670,6 +3761,10 @@ function renderSpotifySettings(status) {
       <label>
         <span>Default device ID</span>
         <input name="default_device_id" value="${escapeHtml(status.default_device_id)}" placeholder="Spotify Connect device ID" maxlength="200">
+      </label>
+      <label>
+        <span>Default device name</span>
+        <input name="default_device_name" value="${escapeHtml(defaultDeviceName)}" placeholder="Eabha's Office Dot" maxlength="200">
       </label>
       <label>
         <span>Start volume</span>
@@ -5073,10 +5168,11 @@ async function handleRequest(request, response) {
 
   if (request.method === "GET" && url.pathname === "/api/spotify/devices") {
     try {
+      const devices = await getSpotifyDevices();
       sendJson(response, 200, {
         ok: true,
         spotify: getSpotifyStatus(),
-        devices: await getSpotifyDevices(),
+        devices,
       });
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error.message, spotify: getSpotifyStatus() });

@@ -7,6 +7,8 @@ const { DatabaseSync } = require("node:sqlite");
 const { Connection: EspHomeConnection } = require("esphome-native-api");
 const { pb: EspHomePb } = require("esphome-native-api/lib/utils/messages");
 
+loadLocalEnv();
+
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "127.0.0.1";
 const DB_PATH = process.env.KIDS_TUNES_DB_PATH || getDefaultDatabasePath();
@@ -21,6 +23,40 @@ const SPOTIFY_SCOPES = [
   "user-read-playback-state",
   "user-modify-playback-state",
 ];
+
+function loadLocalEnv() {
+  const envPath = path.join(__dirname, ".env");
+  if (!fs.existsSync(envPath)) {
+    return;
+  }
+
+  for (const rawLine of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+
+    const separatorIndex = line.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+
+    const key = line.slice(0, separatorIndex).trim();
+    let value = line.slice(separatorIndex + 1).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || process.env[key]) {
+      continue;
+    }
+
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+
+    process.env[key] = value;
+  }
+}
 
 let espHomeBridge = {
   connection: null,

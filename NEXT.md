@@ -88,7 +88,7 @@ The app is normally started manually from PowerShell with:
 npm.cmd start
 ```
 
-Spotify credentials are set as PowerShell environment variables before starting the app. Do not assume a new terminal has them.
+Spotify credentials should now live in a local `.env` file. Copy `.env.example` to `.env`, add the real Spotify Developer client id and secret, then restart with `npm.cmd start`. The `.env` file is ignored by git.
 
 ## Immediate Next Action
 
@@ -100,6 +100,8 @@ In the PowerShell window that is currently running Kids Tunes:
 Ctrl+C
 npm.cmd start
 ```
+
+If Spotify import/playback reports `invalid_client`, check `.env` first. It means the saved Spotify token exists, but the current app credentials used to refresh it are wrong or missing.
 
 Then reconnect Spotify from the app so the token includes the new `playlist-read-private` scope:
 

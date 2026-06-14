@@ -208,12 +208,24 @@ Set this redirect URI in the Spotify Developer app:
 http://127.0.0.1:8787/spotify/callback
 ```
 
-Start the app with:
+Create a local `.env` file from the sample:
 
 ```powershell
-$env:SPOTIFY_CLIENT_ID="your-client-id"
-$env:SPOTIFY_CLIENT_SECRET="your-client-secret"
-npm start
+Copy-Item .env.example .env
+notepad .env
+```
+
+Put your real Spotify Developer values into `.env`:
+
+```text
+SPOTIFY_CLIENT_ID=your-client-id
+SPOTIFY_CLIENT_SECRET=your-client-secret
+```
+
+Then start the app with:
+
+```powershell
+npm.cmd start
 ```
 
 Then open the UI and use the Spotify section to connect the account. The first Spotify test can target a listed Spotify Connect device such as an Echo speaker. Spotify track, album, playlist, and episode URLs are accepted. The Spotify section also stores the default device ID and a safe start volume, which defaults to `30`.

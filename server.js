@@ -13,6 +13,10 @@ const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "127.0.0.1";
 const DB_PATH = process.env.KIDS_TUNES_DB_PATH || getDefaultDatabasePath();
 const ESPHOME_SCAN_DEBOUNCE_MS = 2500;
+const ESPHOME_WATCHDOG_INTERVAL_MS = 60_000;
+const ESPHOME_RECONNECT_BACKOFF_MS = 30_000;
+const ESPHOME_CONNECTING_TIMEOUT_MS = 2 * 60_000;
+const ESPHOME_CONNECTED_REFRESH_MS = 6 * 60 * 60_000;
 const TAGREADER_BUZZER_SWITCH_KEY = 1985256757;
 const MEDIA_ASSIGNMENT_TTL_MS = 15 * 60 * 1000;
 const SPOTIFY_REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI || `http://127.0.0.1:${PORT}/spotify/callback`;
@@ -66,9 +70,15 @@ let espHomeBridge = {
   lastTagId: "",
   lastScanAt: "",
   startedAt: "",
+  lastReconnectAt: "",
+  lastReconnectReason: "",
+  reconnectCount: 0,
+  watchdogStartedAt: "",
   logHistory: [],
   recentTags: new Map(),
 };
+
+let espHomeWatchdogTimer = null;
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
@@ -2347,6 +2357,85 @@ function stopEspHomeBridge() {
   espHomeBridge.status = "disabled";
 }
 
+function restartEspHomeBridge(reason = "manual reconnect") {
+  const settings = getEspHomeSettings();
+
+  if (!settings.enabled) {
+    stopEspHomeBridge();
+    espHomeBridge.lastReconnectReason = `${reason}; bridge disabled`;
+    return;
+  }
+
+  espHomeBridge.reconnectCount += 1;
+  espHomeBridge.lastReconnectAt = new Date().toISOString();
+  espHomeBridge.lastReconnectReason = reason;
+  startEspHomeBridge(settings);
+  rememberEspHomeLog(`Reader bridge reconnect requested: ${reason}`);
+}
+
+function shouldThrottleEspHomeReconnect() {
+  const lastReconnectTime = Date.parse(espHomeBridge.lastReconnectAt || "");
+  return !Number.isNaN(lastReconnectTime) && Date.now() - lastReconnectTime < ESPHOME_RECONNECT_BACKOFF_MS;
+}
+
+function checkEspHomeBridgeWatchdog() {
+  const settings = getEspHomeSettings();
+
+  if (!settings.enabled) {
+    if (espHomeBridge.status !== "disabled") {
+      stopEspHomeBridge();
+    }
+    return;
+  }
+
+  if (shouldThrottleEspHomeReconnect()) {
+    return;
+  }
+
+  const startedAt = Date.parse(espHomeBridge.startedAt || "");
+  const ageMs = Number.isNaN(startedAt) ? 0 : Date.now() - startedAt;
+
+  if (espHomeBridge.status === "disabled") {
+    restartEspHomeBridge("watchdog: bridge enabled but disabled");
+    return;
+  }
+
+  if (espHomeBridge.status === "disconnected" || espHomeBridge.status === "error") {
+    restartEspHomeBridge(`watchdog: bridge status ${espHomeBridge.status}`);
+    return;
+  }
+
+  if (espHomeBridge.status === "connecting" && ageMs > ESPHOME_CONNECTING_TIMEOUT_MS) {
+    restartEspHomeBridge("watchdog: connection attempt timed out");
+    return;
+  }
+
+  if (espHomeBridge.status === "connected" && ageMs > ESPHOME_CONNECTED_REFRESH_MS) {
+    restartEspHomeBridge("watchdog: scheduled connection refresh");
+  }
+}
+
+function startEspHomeWatchdog() {
+  if (espHomeWatchdogTimer) {
+    return;
+  }
+
+  espHomeBridge.watchdogStartedAt = new Date().toISOString();
+  espHomeWatchdogTimer = setInterval(checkEspHomeBridgeWatchdog, ESPHOME_WATCHDOG_INTERVAL_MS);
+  if (typeof espHomeWatchdogTimer.unref === "function") {
+    espHomeWatchdogTimer.unref();
+  }
+}
+
+function stopEspHomeWatchdog() {
+  if (!espHomeWatchdogTimer) {
+    return;
+  }
+
+  clearInterval(espHomeWatchdogTimer);
+  espHomeWatchdogTimer = null;
+}
+
 async function muteEspHomeBuzzer(connection) {
   try {
     connection.switchCommandService({
@@ -3694,8 +3783,15 @@ function renderEspHomeBridge(settings, status) {
       <span>Last tag: ${status.lastTagId ? `<code>${escapeHtml(status.lastTagId)}</code>` : `<span class="muted">none</span>`}</span>
       <span>Last scan: ${status.lastScanAt ? escapeHtml(formatScanTime(status.lastScanAt)) : `<span class="muted">none</span>`}</span>
       <span>Last log: ${status.lastLog ? escapeHtml(status.lastLog) : `<span class="muted">none</span>`}</span>
+      <span>Reconnects: <code>${escapeHtml(status.reconnectCount || 0)}</code></span>
+      <span>Last reconnect: ${status.lastReconnectAt ? escapeHtml(formatScanTime(status.lastReconnectAt)) : `<span class="muted">none</span>`}</span>
+      <span>Reconnect reason: ${status.lastReconnectReason ? escapeHtml(status.lastReconnectReason) : `<span class="muted">none</span>`}</span>
+      <span>Watchdog: ${status.watchdogStartedAt ? `<code>on</code>` : `<span class="muted">off</span>`}</span>
       ${status.lastError ? `<span class="error-text">Error: ${escapeHtml(status.lastError)}</span>` : ""}
     </div>
+    <form class="inline-form" method="post" action="/settings/esphome/reconnect">
+      <button type="submit">Reconnect Reader</button>
+    </form>
     <ol class="bridge-log-list">${logRows}</ol>
   `;
 }
@@ -5318,6 +5414,16 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/settings/esphome/reconnect") {
+    restartEspHomeBridge("manual API reconnect");
+    sendJson(response, 200, {
+      ok: true,
+      esphome: getEspHomeSettings(),
+      bridge: getEspHomeBridgeStatus(),
+    });
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/settings/reader-test-action") {
     sendJson(response, 200, {
       ok: true,
@@ -5682,6 +5788,12 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/settings/esphome/reconnect") {
+    restartEspHomeBridge("manual UI reconnect");
+    redirect(response, "/reader");
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/settings/reader-test-action") {
     try {
       const payload = await readPayload(request);
@@ -5774,9 +5886,11 @@ server.listen(PORT, HOST, () => {
   console.log(`Kids Tunes listening at http://${HOST}:${PORT}`);
   console.log(`SQLite database: ${DB_PATH}`);
   startEspHomeBridge();
+  startEspHomeWatchdog();
 });
 
 function shutdown() {
+  stopEspHomeWatchdog();
   stopEspHomeBridge();
   server.close(() => {
     db.close();

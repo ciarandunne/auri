@@ -519,6 +519,10 @@ curl.exe -s http://127.0.0.1:8787/api/spotify/devices
 13. Add content collections:
    - Group media into collections such as Deep Blue Sea, Bedtime, Disney, Christmas, and favorites.
    - Use collections for browsing, filtering, printable labels, and playlist/card assignment.
+13a. ESPHome reader reliability:
+   - Implemented foundation: watchdog auto-reconnects on disconnected/error, stuck connecting, and scheduled long-interval refresh.
+   - Implemented manual `Reconnect Reader` button on `/reader`.
+   - Next validation: restart the app, confirm `/reader` shows watchdog on, tap one card, and confirm scan/playback still works.
 14. Make the app automatically recover when a saved Spotify device ID changes by matching the Echo Dot by name.
    - Implemented foundation: Kids Tunes now stores `spotify_default_device_name`.
    - Playback/pause/volume commands resolve the current Spotify device ID from the saved name if the old ID disappears.

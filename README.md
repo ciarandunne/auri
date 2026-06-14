@@ -210,6 +210,10 @@ Set this redirect URI in the Spotify Developer app:
 http://127.0.0.1:8787/spotify/callback
 ```
 
+If Spotify shows `redirect_uri: Not matching configuration`, the Developer app is missing that exact callback URL. Add it in the Spotify Developer Dashboard and save the app settings, then click `Connect Spotify` again in Kids Tunes.
+
+If playback fails with `invalid_client` after changing `.env`, the saved Spotify token was issued for a different Developer app. Click `Connect Spotify` again so Kids Tunes stores a fresh token for the current Client ID/Secret.
+
 Create a local `.env` file from the sample:
 
 ```powershell

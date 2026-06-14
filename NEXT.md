@@ -92,28 +92,39 @@ Spotify credentials should now live in a local `.env` file. Copy `.env.example` 
 
 ## Immediate Next Action
 
-Paused on June 13, 2026 after a restart. Current symptom: presenting a physical card makes the reader show a green light, but nothing plays.
+Current state as of June 14, 2026:
 
-When resuming, do not start by repeatedly scanning cards in the bedroom. First verify the quiet/server-side pieces:
+- `.env` has `ciaran.dunne2` Spotify Developer app credentials.
+- The Spotify Developer app must include this redirect URI exactly:
 
-1. Confirm `.env` contains the real Spotify Developer `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`.
-2. Restart Kids Tunes from the project folder:
+```text
+http://127.0.0.1:8787/spotify/callback
+```
 
-In the PowerShell window that is currently running Kids Tunes:
+- `Connect Spotify` has been re-run successfully.
+- Physical RFID cards scan and play Spotify on `Eabha's Office Dot`.
+- Spotify device-name fallback is implemented.
+- ESPHome reader watchdog is implemented in code.
+
+Next validation after any restart:
+
+1. Restart Kids Tunes from the project folder:
 
 ```powershell
 Ctrl+C
 npm.cmd start
 ```
 
-3. Open `http://127.0.0.1:8787/media` and confirm the Spotify section shows `Connected account: ciaran.dunne2`.
-4. If Spotify import/playback reports `invalid_client`, check `.env` first. It means the saved Spotify token exists, but the current app credentials used to refresh it are wrong or missing.
-5. Check the recent scans/action events after one card tap:
+2. Open `http://127.0.0.1:8787/reader` and confirm the watchdog shows on.
+3. Open `http://127.0.0.1:8787/api/spotify/devices` once to refresh/learn the current Echo Dot device ID/name.
+4. Open `http://127.0.0.1:8787/media` and confirm the Spotify section shows `Connected account: ciaran.dunne2`.
+5. Tap one physical card and confirm playback.
+6. If Spotify import/playback reports `invalid_client`, click `Connect Spotify` again. If Spotify shows `redirect_uri: Not matching configuration`, add the callback URL above to the Spotify Developer app.
+7. If a card tap does not play, check recent scans/action events:
    - If no scan appears, the ESP bridge or reader connection is the problem.
    - If a scan appears but no action event appears, the card/action mapping is the problem.
    - If an action event appears with a Spotify error, Spotify auth/device routing is the problem.
    - If an action event says pause/stop, the app may think that card is already active; tap behavior is intentionally "same active card pauses".
-6. Confirm the default Spotify device is still `Eabha's Office Dot` / device id `96f469f9-839d-4314-b326-9336e8714ef2_amzn_1`.
 
 Then reconnect Spotify from the app so the token includes the new `playlist-read-private` scope:
 

@@ -72,7 +72,7 @@ Known cards can also be given fake actions from the Known cards section. When a 
 Sonos commands only send to a real speaker after Sonos is enabled and a target Sonos device is added in the Sonos devices section.
 Receivers map a `reader_id` to a friendly profile, child name, default Sonos device, and later a Spotify account.
 
-The Tracks page is for imported tracks/episodes and card assignment. Spotify account status, playlist import, artwork caching, playback target settings, and visible Spotify devices live on the Spotify page.
+The Tracks page is for imported tracks/episodes and card assignment. The Playlists page is for Spotify playlist import, refresh, saved playlist tracking, and artwork caching. The Spotify page is for account status, playback target settings, and visible Spotify devices.
 
 The ESPHome reader bridge can be enabled from the browser UI. For the current tag reader, use host/IP `192.168.5.87` and reader ID `tagreader-c6c6e4`. The bridge listens to ESPHome logs and Home Assistant service/event messages. If it detects a tag ID, it creates a normal scan event with source `esphome`.
 
@@ -282,7 +282,9 @@ npm.cmd start
 
 Then open the UI and use the Spotify section to connect the account. The first Spotify test can target a listed Spotify Connect device such as an Echo speaker. Spotify track, album, playlist, and episode URLs are accepted. The Spotify section also stores the default device ID and a safe start volume, which defaults to `30`.
 
-The Media page can also import a Spotify playlist into the local media library. After this feature was added, Spotify auth requests `playlist-read-private`; reconnect Spotify once after restarting so the saved token has the playlist scope.
+The Playlists page can import a Spotify playlist into the local media library. After this feature was added, Spotify auth requests `playlist-read-private`; reconnect Spotify once after restarting so the saved token has the playlist scope.
+
+Premium or restricted podcast entries may appear in a Spotify playlist but come back through the Spotify API as an empty playlist item with no playable media object, title, URI, or ID. Auri currently skips those entries and includes them in the skipped count. The planned improvement is to show skipped playlist positions and reasons directly in the Playlists UI, including a `premium/restricted or unavailable` label when Spotify gives no media object.
 
 Playlist import API:
 
@@ -294,7 +296,7 @@ Playlist import API:
 }
 ```
 
-After media is imported, the Media page can assign a physical card:
+After media is imported, the Tracks page can assign a physical card:
 
 1. Click `Assign Next Card` beside an unassigned Spotify media item.
 2. Scan an unknown RFID/NFC card within 15 minutes.
@@ -313,7 +315,7 @@ POST /api/media/assign-next/cancel
 Playlist artwork caching:
 
 - Playlist import tries to cache Spotify artwork into `data/spotify-artwork/`.
-- The Media page has a `Cache Missing Artwork` button for older imports or failed downloads.
+- The Playlists page has a `Cache Missing Artwork` button for older imports or failed downloads.
 - Successful caches update `media_items.local_artwork_path`.
 - Cached artwork is local data and is ignored by Git.
 

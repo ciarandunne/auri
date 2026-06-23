@@ -75,6 +75,7 @@ The current prototype can:
 - Keep playlist import/refresh on a dedicated `Playlists` tab, separate from Spotify account/playback settings.
 - Save imported Spotify playlists and refresh them later without re-pasting the URL.
 - Track whether playlist media is still in the playlist or has been removed on refresh.
+- Known Spotify playlist import behavior: premium/restricted podcast entries can appear in a playlist response as an empty media item with no title, artist, URI, or ID. Auri currently skips those entries and counts them as skipped.
 - Assign physical cards to Spotify episode URLs.
 - Track which imported media has been assigned a card.
 - Track print workflow status for imported artwork: `not_printed`, `queued`, `pdf_generated`, or `printed`.
@@ -576,10 +577,12 @@ curl.exe -s http://127.0.0.1:8787/api/spotify/devices
    - Show current/last playing item.
    - Keep admin setup separate from simple parent controls.
 9. Expand the media library into a full Spotify playlist-to-card assignment flow:
-   - Foundation started: paste a Spotify playlist URL in `/media`.
+   - Foundation started: paste a Spotify playlist URL in `/playlists`.
    - Foundation started: import playlist items into the `media_items` table.
    - Foundation started: store Spotify URL/URI, title, artist/show, album, duration, and artwork URL.
-   - Next: fetch/cache imported artwork locally.
+   - Foundation started: fetch/cache imported artwork locally.
+   - Next: add an import details panel showing skipped playlist entries by playlist position and reason.
+   - Known edge case: premium/restricted podcast entries may arrive from Spotify as empty playlist items; label these as `premium/restricted or unavailable` if Spotify gives no playable media object.
    - Show tracks/episodes from that playlist with metadata.
    - Show assignment status for each item, such as unassigned, assigned, or retired.
    - Show print status for each item, such as not printed, queued for print, PDF generated, or printed.

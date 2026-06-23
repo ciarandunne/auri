@@ -99,23 +99,42 @@ Spotify credentials live in the NAS deployment `.env` file at `Z:\auri\.env` fro
 
 Current state as of June 22, 2026:
 
-- Auri has been staged to `Z:\auri`.
-- The new Synology project should be named `auri` and run from `/volume1/docker/auri`.
-- The app should be live at this URL after cutover:
+- Auri is running from Synology Container Manager as project `auri`.
+- The Synology deployment folder is `Z:\auri` from Windows and `/volume1/docker/auri` on the NAS.
+- The app is live at:
 
 ```text
 http://192.168.5.55:8787/
 ```
 
-- `/health` should return `ok: true` after cutover.
+- `/health` returns `ok: true` with `service: auri` and `name: Auri`.
 - The NAS database is mounted at `/app/data/auri.db`.
 - Existing cards/actions/media migrated successfully.
 - ESPHome reader bridge is connected to `192.168.5.87`.
 - Spotify is authorized as `ciaran.dunne2`.
-- `Eabha's Echo Dot` is visible and card playback has worked from the NAS.
+- `Eabha's Echo Dot` has been visible to Spotify.
 - The laptop-local Auri process should stay stopped so the NAS is the only active app brain.
 
-Next operational checks:
+Post-migration checklist:
+
+1. In the morning, tap one physical card and confirm playback from the NAS-hosted Auri app.
+2. If playback works, archive/remove the old Synology `kids-tunes` project/folder so there is no confusion.
+3. Decide what to do with the two local draft script changes:
+
+```text
+scripts/create-label-test-sheet.mjs
+scripts/create-folder-artwork-sheet.mjs
+```
+
+4. Add a simple backup plan for the live database:
+
+```text
+/volume1/docker/auri/data/auri.db
+```
+
+5. Later, set up HTTPS/reverse proxy or another clean auth path for Spotify reauthorization from the NAS.
+
+Operational checks:
 
 1. Use the NAS URL, not localhost:
 

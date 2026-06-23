@@ -3660,7 +3660,7 @@ function renderSpotifyPlaylistList(playlists) {
             <span class="small-text">${playlist.last_imported_at ? escapeHtml(formatScanTime(playlist.last_imported_at)) : "Never"}</span>
           </td>
           <td>
-            <form class="inline-form" method="post" action="/spotify/import-playlist">
+            <form class="inline-form" method="post" action="/playlists/import">
               <input type="hidden" name="playlist_url" value="${escapeHtml(playlist.provider_uri)}">
               <button type="submit">Refresh</button>
             </form>
@@ -3746,7 +3746,7 @@ function renderSpotifyPlaylistImport(status) {
         ${refreshAccountForm}
         ${loginLink}
       </div>
-      <form class="playlist-import-form" method="post" action="/spotify/import-playlist">
+      <form class="playlist-import-form" method="post" action="/playlists/import">
         <label>
           <span>Spotify playlist URL</span>
           <input name="playlist_url" placeholder="https://open.spotify.com/playlist/..." maxlength="500" required>
@@ -3757,7 +3757,7 @@ function renderSpotifyPlaylistImport(status) {
         <h3>Saved playlists</h3>
         ${renderSpotifyPlaylistList(playlists)}
       </div>
-      <form class="inline-form cache-artwork-form" method="post" action="/spotify/cache-artwork">
+      <form class="inline-form cache-artwork-form" method="post" action="/playlists/cache-artwork">
         <button type="submit">Cache Missing Artwork</button>
       </form>
     </div>
@@ -4305,6 +4305,7 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
   const readerStatus = getEspHomeBridgeStatus();
   const navItems = [
     ["/media", "Tracks", mediaItems.length],
+    ["/playlists", "Playlists", getSpotifyPlaylists().length],
     ["/spotify", "Spotify", getSpotifyStatus().authorized ? "Ready" : "Login"],
     ["/cards", "Cards", cardCount],
     ["/activity", "Activity", actionEventCount],
@@ -5292,6 +5293,24 @@ function renderMediaPage() {
   );
 }
 
+function renderPlaylistsPage() {
+  return renderPageShell(
+    "/playlists",
+    "Playlists",
+    "Import and refresh Spotify playlists, cache artwork, and monitor assignment readiness.",
+    `
+      <section aria-label="Spotify playlist import and refresh">
+        <div class="section-heading">
+          <h2>Playlist library</h2>
+        </div>
+        <div class="settings-panel">
+          ${renderSpotifyPlaylistImport(getSpotifyStatus())}
+        </div>
+      </section>
+    `,
+  );
+}
+
 async function renderSpotifyPage() {
   let devices = [];
   let devicesError = "";
@@ -5305,7 +5324,7 @@ async function renderSpotifyPage() {
   return renderPageShell(
     "/spotify",
     "Spotify",
-    "Playlist import, account status, and playback target management.",
+    "Account status, playback target, and visible Spotify devices.",
     `
       <div class="spotify-management-grid">
         <section aria-label="Spotify account and playback target">
@@ -5314,15 +5333,6 @@ async function renderSpotifyPage() {
           </div>
           <div class="settings-panel">
             ${renderSpotifySettings(getSpotifyStatus())}
-          </div>
-        </section>
-
-        <section aria-label="Import Spotify playlist">
-          <div class="section-heading">
-            <h2>Playlist import</h2>
-          </div>
-          <div class="settings-panel">
-            ${renderSpotifyPlaylistImport(getSpotifyStatus())}
           </div>
         </section>
 
@@ -5474,6 +5484,11 @@ async function handleRequest(request, response) {
 
   if (request.method === "GET" && url.pathname === "/media") {
     sendHtml(response, renderMediaPage());
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/playlists") {
+    sendHtml(response, renderPlaylistsPage());
     return;
   }
 
@@ -6112,13 +6127,13 @@ async function handleRequest(request, response) {
     return;
   }
 
-  if (request.method === "POST" && url.pathname === "/spotify/import-playlist") {
+  if (request.method === "POST" && (url.pathname === "/playlists/import" || url.pathname === "/spotify/import-playlist")) {
     try {
       const payload = await readPayload(request);
       const result = await importSpotifyPlaylist(payload.playlist_url || payload.playlist_uri || payload.url || payload.uri);
       saveSpotifyPlaylistImport(result);
       saveLastSpotifyPlaylistImport(result);
-      redirect(response, "/spotify");
+      redirect(response, "/playlists");
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error.message, spotify: getSpotifyStatus() });
     }
@@ -6176,11 +6191,11 @@ async function handleRequest(request, response) {
     return;
   }
 
-  if (request.method === "POST" && url.pathname === "/spotify/cache-artwork") {
+  if (request.method === "POST" && (url.pathname === "/playlists/cache-artwork" || url.pathname === "/spotify/cache-artwork")) {
     try {
       const result = await cacheMissingSpotifyArtwork(100);
       saveLastArtworkCacheResult(result);
-      redirect(response, "/spotify");
+      redirect(response, "/playlists");
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error.message });
     }

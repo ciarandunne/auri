@@ -72,7 +72,11 @@ The current prototype can:
 - Receive ESPHome tag scans from the Adonno-style PN532 reader.
 - Store scans/cards/actions in SQLite.
 - Maintain a first-pass media library table synced from existing Spotify card actions.
+- Save imported Spotify playlists and refresh them later without re-pasting the URL.
+- Track whether playlist media is still in the playlist or has been removed on refresh.
 - Assign physical cards to Spotify episode URLs.
+- Track which imported media has been assigned a card.
+- Track print workflow status for imported artwork: `not_printed`, `queued`, `pdf_generated`, or `printed`.
 - Play Spotify content on the configured Echo Dot.
 - Start Spotify tracks/episodes from the beginning.
 - Set Spotify start volume to 15%.
@@ -119,20 +123,22 @@ Post-migration checklist:
 
 1. In the morning, tap one physical card and confirm playback from the NAS-hosted Auri app.
 2. If playback works, archive/remove the old Synology `kids-tunes` project/folder so there is no confusion.
-3. Decide what to do with the two local draft script changes:
+3. Rebuild/recreate the Synology `auri` project after the playlist/print-status update, then open `/spotify` and confirm the saved playlist appears.
+4. Refresh the saved playlist and confirm newly added Spotify tracks/episodes appear on `/media`.
+5. Decide what to do with the two local draft script changes:
 
 ```text
 scripts/create-label-test-sheet.mjs
 scripts/create-folder-artwork-sheet.mjs
 ```
 
-4. Add a simple backup plan for the live database:
+6. Add a simple backup plan for the live database:
 
 ```text
 /volume1/docker/auri/data/auri.db
 ```
 
-5. Later, set up HTTPS/reverse proxy or another clean auth path for Spotify reauthorization from the NAS.
+7. Later, set up HTTPS/reverse proxy or another clean auth path for Spotify reauthorization from the NAS.
 
 Operational checks:
 

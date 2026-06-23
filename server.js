@@ -159,6 +159,24 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_card_media_assignments_media_item_id
   ON card_media_assignments(media_item_id);
 
+  CREATE TABLE IF NOT EXISTS spotify_playlists (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_uri TEXT NOT NULL UNIQUE,
+    source_url TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    last_imported_at TEXT NOT NULL DEFAULT '',
+    last_total_count INTEGER NOT NULL DEFAULT 0,
+    last_imported_count INTEGER NOT NULL DEFAULT 0,
+    last_skipped_count INTEGER NOT NULL DEFAULT 0,
+    last_cached_artwork_count INTEGER NOT NULL DEFAULT 0,
+    last_failed_artwork_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_spotify_playlists_provider_uri
+  ON spotify_playlists(provider_uri);
+
   CREATE TABLE IF NOT EXISTS action_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     scan_id INTEGER NOT NULL,
@@ -211,6 +229,7 @@ db.exec(`
 ensureColumn("media_items", "imported_from_provider_uri", "TEXT NOT NULL DEFAULT ''");
 ensureColumn("media_items", "imported_from_title", "TEXT NOT NULL DEFAULT ''");
 ensureColumn("media_items", "imported_at", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("media_items", "playlist_status", "TEXT NOT NULL DEFAULT 'active'");
 
 const insertScan = db.prepare(`
   INSERT INTO scan_events (reader_id, tag_id, source, scanned_at)
@@ -420,10 +439,11 @@ const upsertMediaItemStatement = db.prepare(`
     imported_from_provider_uri,
     imported_from_title,
     imported_at,
+    playlist_status,
     created_at,
     updated_at
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(provider_uri) DO UPDATE SET
     source_url = excluded.source_url,
     title = excluded.title,
@@ -445,6 +465,10 @@ const upsertMediaItemStatement = db.prepare(`
     imported_at = CASE
       WHEN excluded.imported_at != '' THEN excluded.imported_at
       ELSE media_items.imported_at
+    END,
+    playlist_status = CASE
+      WHEN excluded.imported_from_provider_uri != '' THEN excluded.playlist_status
+      ELSE media_items.playlist_status
     END,
     updated_at = excluded.updated_at
 `);
@@ -474,6 +498,51 @@ const updateMediaItemArtworkStatement = db.prepare(`
   UPDATE media_items
   SET local_artwork_path = ?, updated_at = ?
   WHERE id = ?
+`);
+
+const updateMediaItemPrintStatusStatement = db.prepare(`
+  UPDATE media_items
+  SET print_status = ?, updated_at = ?
+  WHERE id = ?
+`);
+
+const markPlaylistItemsRemovedStatement = db.prepare(`
+  UPDATE media_items
+  SET playlist_status = 'removed_from_playlist', updated_at = ?
+  WHERE imported_from_provider_uri = ?
+`);
+
+const upsertSpotifyPlaylistStatement = db.prepare(`
+  INSERT INTO spotify_playlists (
+    provider_uri,
+    source_url,
+    name,
+    last_imported_at,
+    last_total_count,
+    last_imported_count,
+    last_skipped_count,
+    last_cached_artwork_count,
+    last_failed_artwork_count,
+    created_at,
+    updated_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(provider_uri) DO UPDATE SET
+    source_url = excluded.source_url,
+    name = excluded.name,
+    last_imported_at = excluded.last_imported_at,
+    last_total_count = excluded.last_total_count,
+    last_imported_count = excluded.last_imported_count,
+    last_skipped_count = excluded.last_skipped_count,
+    last_cached_artwork_count = excluded.last_cached_artwork_count,
+    last_failed_artwork_count = excluded.last_failed_artwork_count,
+    updated_at = excluded.updated_at
+`);
+
+const selectSpotifyPlaylists = db.prepare(`
+  SELECT *
+  FROM spotify_playlists
+  ORDER BY last_imported_at DESC, updated_at DESC, id DESC
 `);
 
 const upsertCardMediaAssignmentStatement = db.prepare(`
@@ -1373,6 +1442,7 @@ function upsertMediaItem(item) {
     item.importedFromProviderUri || "",
     item.importedFromTitle || "",
     item.importedAt || "",
+    item.playlistStatus || "active",
     now,
     now,
   );
@@ -1817,7 +1887,76 @@ function mediaItemFromSpotifyPlaylistEntry(entry, playlist, importedAt) {
     importedFromProviderUri: playlistUri,
     importedFromTitle: playlistTitle,
     importedAt,
+    playlistStatus: "active",
   };
+}
+
+function shapeSpotifyPlaylist(row) {
+  return {
+    id: row.id,
+    provider_uri: row.provider_uri,
+    source_url: row.source_url,
+    name: row.name,
+    last_imported_at: row.last_imported_at,
+    last_total_count: row.last_total_count,
+    last_imported_count: row.last_imported_count,
+    last_skipped_count: row.last_skipped_count,
+    last_cached_artwork_count: row.last_cached_artwork_count,
+    last_failed_artwork_count: row.last_failed_artwork_count,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function getSpotifyPlaylists() {
+  const playlists = selectSpotifyPlaylists.all().map(shapeSpotifyPlaylist);
+  const lastImport = getLastSpotifyPlaylistImport();
+  const lastPlaylist = lastImport && lastImport.playlist ? lastImport.playlist : null;
+  const lastProviderUri = lastPlaylist ? normalizeSpotifyUri(lastPlaylist.uri || lastPlaylist.url || "") : "";
+
+  if (lastPlaylist && lastProviderUri && !playlists.some((playlist) => playlist.provider_uri === lastProviderUri)) {
+    playlists.push({
+      id: `last-${lastProviderUri}`,
+      provider_uri: lastProviderUri,
+      source_url: lastPlaylist.url || spotifyUrlForUri(lastProviderUri),
+      name: lastPlaylist.name || lastProviderUri,
+      last_imported_at: lastImport.imported_at || "",
+      last_total_count: lastImport.total_count || 0,
+      last_imported_count: lastImport.imported_count || 0,
+      last_skipped_count: lastImport.skipped_count || 0,
+      last_cached_artwork_count: lastImport.cached_artwork_count || 0,
+      last_failed_artwork_count: lastImport.failed_artwork_count || 0,
+      created_at: lastImport.imported_at || "",
+      updated_at: lastImport.imported_at || "",
+    });
+  }
+
+  return playlists;
+}
+
+function saveSpotifyPlaylistImport(result) {
+  const playlist = result.playlist || {};
+  const providerUri = normalizeSpotifyUri(playlist.uri);
+
+  if (!providerUri) {
+    return;
+  }
+
+  const now = new Date().toISOString();
+
+  upsertSpotifyPlaylistStatement.run(
+    providerUri,
+    playlist.url || spotifyUrlForUri(providerUri),
+    playlist.name || providerUri,
+    result.imported_at || now,
+    result.total_count || 0,
+    result.imported_count || 0,
+    result.skipped_count || 0,
+    result.cached_artwork_count || 0,
+    result.failed_artwork_count || 0,
+    now,
+    now,
+  );
 }
 
 async function importSpotifyPlaylist(uriOrUrl) {
@@ -1842,6 +1981,8 @@ async function importSpotifyPlaylist(uriOrUrl) {
   let skippedCount = 0;
   let cachedArtworkCount = 0;
   let failedArtworkCount = 0;
+
+  markPlaylistItemsRemovedStatement.run(importedAt, playlistInfo.uri);
 
   for (const entry of entries) {
     const item = mediaItemFromSpotifyPlaylistEntry(entry, playlistInfo, importedAt);
@@ -1876,6 +2017,7 @@ async function importSpotifyPlaylist(uriOrUrl) {
     cached_artwork_count: cachedArtworkCount,
     failed_artwork_count: failedArtworkCount,
     total_count: entries.length,
+    imported_at: importedAt,
   };
 }
 
@@ -2965,6 +3107,7 @@ function shapeMediaItem(row) {
     local_artwork_path: row.local_artwork_path,
     duration_ms: row.duration_ms,
     print_status: row.print_status,
+    playlist_status: row.playlist_status || "active",
     imported_from_provider_uri: row.imported_from_provider_uri || "",
     imported_from_title: row.imported_from_title || "",
     imported_at: row.imported_at || "",
@@ -2975,6 +3118,48 @@ function shapeMediaItem(row) {
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+}
+
+const PRINT_STATUSES = new Set(["not_printed", "queued", "pdf_generated", "printed"]);
+const PRINT_STATUS_LABELS = {
+  not_printed: "Not printed",
+  queued: "Queued",
+  pdf_generated: "PDF generated",
+  printed: "Printed",
+};
+
+function normalizePrintStatus(value) {
+  const status = String(value || "").trim();
+  return PRINT_STATUSES.has(status) ? status : "";
+}
+
+function updateMediaItemPrintStatus(mediaItemId, printStatus) {
+  const id = Number(mediaItemId);
+  const status = normalizePrintStatus(printStatus);
+
+  if (!Number.isInteger(id) || id < 1) {
+    return { error: "media_item_id is required" };
+  }
+
+  if (!status) {
+    return { error: "print_status is invalid" };
+  }
+
+  if (!getMediaItemById(id)) {
+    return { error: "media item not found" };
+  }
+
+  updateMediaItemPrintStatusStatement.run(status, new Date().toISOString(), id);
+  return { ok: true, media_item: shapeMediaItem(selectMediaItems.all(500).find((item) => item.id === id) || getMediaItemById(id)) };
+}
+
+function renderPrintStatusOptions(selectedStatus) {
+  return Array.from(PRINT_STATUSES)
+    .map((status) => {
+      const selected = status === selectedStatus ? " selected" : "";
+      return `<option value="${escapeHtml(status)}"${selected}>${escapeHtml(PRINT_STATUS_LABELS[status] || status)}</option>`;
+    })
+    .join("");
 }
 
 function getMediaItems(limit = 100) {
@@ -3311,11 +3496,14 @@ function renderMediaLibrary(mediaItems, pendingAssignment = null) {
           item.provider_uri,
           item.assignment_status,
           item.print_status,
+          item.playlist_status,
           item.assigned_card_names.join(" "),
           pendingAssignment && pendingAssignment.media_item_id === item.id ? "pending" : "",
         ].join(" ");
         const isPending = pendingAssignment && pendingAssignment.media_item_id === item.id;
         const canAssign = item.assignment_status === "unassigned" && item.provider === "spotify";
+        const printLabel = PRINT_STATUS_LABELS[item.print_status] || item.print_status;
+        const playlistStatus = item.playlist_status === "removed_from_playlist" ? "removed" : "in playlist";
         const assignmentControl = isPending
           ? `
               <form class="inline-form" method="post" action="/media/assign-next/cancel">
@@ -3355,6 +3543,7 @@ function renderMediaLibrary(mediaItems, pendingAssignment = null) {
                 ? `<span class="small-text">Imported from ${escapeHtml(item.imported_from_title)}</span>`
                 : ""
             }
+            <span class="small-text">${escapeHtml(playlistStatus)}</span>
           </td>
           <td>
             <code>${escapeHtml(item.provider_uri)}</code>
@@ -3365,7 +3554,14 @@ function renderMediaLibrary(mediaItems, pendingAssignment = null) {
             <span class="small-text">${item.assigned_card_names.length ? escapeHtml(item.assigned_card_names.join(", ")) : "No card assigned"}</span>
           </td>
           <td>
-            <span class="action-status">${escapeHtml(item.print_status)}</span>
+            <form class="inline-form print-status-form" method="post" action="/media/print-status">
+              <input type="hidden" name="media_item_id" value="${escapeHtml(item.id)}">
+              <select name="print_status" aria-label="Print status for ${escapeHtml(item.title)}">
+                ${renderPrintStatusOptions(item.print_status)}
+              </select>
+              <button type="submit">Save</button>
+            </form>
+            <span class="small-text">${escapeHtml(printLabel)}</span>
           </td>
           <td>${assignmentControl}</td>
         </tr>
@@ -3441,6 +3637,56 @@ function saveLastArtworkCacheResult(result) {
   }));
 }
 
+function renderSpotifyPlaylistList(playlists) {
+  if (!playlists.length) {
+    return `<div class="empty">No saved Spotify playlists yet. Import one playlist URL to save it here.</div>`;
+  }
+
+  const rows = playlists
+    .map(
+      (playlist) => `
+        <tr>
+          <td>
+            <strong>${escapeHtml(playlist.name)}</strong>
+            <span class="small-text">${escapeHtml(playlist.provider_uri)}</span>
+            ${playlist.source_url ? `<a class="small-text" href="${escapeHtml(playlist.source_url)}">Open in Spotify</a>` : ""}
+          </td>
+          <td>
+            <span class="action-status">${escapeHtml(String(playlist.last_imported_count))} saved</span>
+            <span class="small-text">${escapeHtml(String(playlist.last_skipped_count))} skipped</span>
+            <span class="small-text">${escapeHtml(String(playlist.last_total_count))} total</span>
+          </td>
+          <td>
+            <span class="small-text">${playlist.last_imported_at ? escapeHtml(formatScanTime(playlist.last_imported_at)) : "Never"}</span>
+          </td>
+          <td>
+            <form class="inline-form" method="post" action="/spotify/import-playlist">
+              <input type="hidden" name="playlist_url" value="${escapeHtml(playlist.provider_uri)}">
+              <button type="submit">Refresh</button>
+            </form>
+          </td>
+        </tr>
+      `,
+    )
+    .join("");
+
+  return `
+    <div class="table-wrap compact-table-wrap">
+      <table class="media-table">
+        <thead>
+          <tr>
+            <th>Playlist</th>
+            <th>Last sync</th>
+            <th>Updated</th>
+            <th>Refresh</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderSpotifyPlaylistImport(status) {
   const modeClass = status.authorized ? "armed" : "safe";
   const modeText = !status.configured ? "Needs app credentials" : status.authorized ? "Ready" : "Needs Spotify login";
@@ -3452,6 +3698,7 @@ function renderSpotifyPlaylistImport(status) {
   const refreshAccountForm = status.authorized
     ? `<form class="inline-form" method="post" action="/spotify/refresh-account"><button type="submit">Refresh Account</button></form>`
     : "";
+  const playlists = getSpotifyPlaylists();
 
   return `
     <div class="import-panel">
@@ -3504,8 +3751,12 @@ function renderSpotifyPlaylistImport(status) {
           <span>Spotify playlist URL</span>
           <input name="playlist_url" placeholder="https://open.spotify.com/playlist/..." maxlength="500" required>
         </label>
-        <button type="submit">Import Playlist</button>
+        <button type="submit">Save / Refresh Playlist</button>
       </form>
+      <div class="saved-playlists">
+        <h3>Saved playlists</h3>
+        ${renderSpotifyPlaylistList(playlists)}
+      </div>
       <form class="inline-form cache-artwork-form" method="post" action="/spotify/cache-artwork">
         <button type="submit">Cache Missing Artwork</button>
       </form>
@@ -5362,14 +5613,36 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/media/print-status") {
+    try {
+      const payload = await readPayload(request);
+      const result = updateMediaItemPrintStatus(payload.media_item_id || payload.id, payload.print_status);
+
+      if (result.error) {
+        sendJson(response, 400, { ok: false, error: result.error });
+        return;
+      }
+
+      sendJson(response, 200, {
+        ok: true,
+        media_items: getMediaItems(100),
+      });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/api/spotify/import-playlist") {
     try {
       const payload = await readPayload(request);
       const result = await importSpotifyPlaylist(payload.playlist_url || payload.playlist_uri || payload.url || payload.uri);
+      saveSpotifyPlaylistImport(result);
       saveLastSpotifyPlaylistImport(result);
       sendJson(response, 200, {
         ok: true,
         result,
+        playlists: getSpotifyPlaylists(),
         media_items: getMediaItems(100),
       });
     } catch (error) {
@@ -5454,6 +5727,14 @@ async function handleRequest(request, response) {
     sendJson(response, 200, {
       ok: true,
       spotify: getSpotifyStatus(),
+    });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/spotify/playlists") {
+    sendJson(response, 200, {
+      ok: true,
+      playlists: getSpotifyPlaylists(),
     });
     return;
   }
@@ -5835,6 +6116,7 @@ async function handleRequest(request, response) {
     try {
       const payload = await readPayload(request);
       const result = await importSpotifyPlaylist(payload.playlist_url || payload.playlist_uri || payload.url || payload.uri);
+      saveSpotifyPlaylistImport(result);
       saveLastSpotifyPlaylistImport(result);
       redirect(response, "/spotify");
     } catch (error) {
@@ -5870,6 +6152,23 @@ async function handleRequest(request, response) {
     try {
       const result = await cacheMissingSpotifyArtwork(100);
       saveLastArtworkCacheResult(result);
+      redirect(response, "/media");
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/media/print-status") {
+    try {
+      const payload = await readPayload(request);
+      const result = updateMediaItemPrintStatus(payload.media_item_id || payload.id, payload.print_status);
+
+      if (result.error) {
+        sendJson(response, 400, { ok: false, error: result.error });
+        return;
+      }
+
       redirect(response, "/media");
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error.message });

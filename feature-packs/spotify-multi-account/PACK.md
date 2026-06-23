@@ -9,7 +9,7 @@ Support one parent Spotify account for managing/importing playlists, while each 
 Target model:
 
 - `ciaran.dunne2` owns/manages source playlists.
-- Kids Tunes imports track/episode metadata from `ciaran.dunne2` playlists.
+- Auri imports track/episode metadata from `ciaran.dunne2` playlists.
 - Eabha receiver plays through Eabha's own Spotify account and speaker.
 - Liam receiver plays through Liam's own Spotify account and speaker.
 - The same physical card/content mapping can work on both receivers.

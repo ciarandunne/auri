@@ -11,7 +11,7 @@ Not integrated.
 ## Integration Tests
 
 1. Connect Ciaran as library account.
-2. Import Kids Tunes playlist.
+2. Import Auri playlist.
 3. Connect Eabha as playback account.
 4. Link Eabha receiver to Eabha playback account.
 5. Scan an assigned card on Eabha receiver.

@@ -9,6 +9,8 @@ const { pb: EspHomePb } = require("esphome-native-api/lib/utils/messages");
 
 loadLocalEnv();
 
+const APP_NAME = "Auri";
+const APP_SERVICE_ID = "auri";
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "127.0.0.1";
 const DB_PATH = process.env.KIDS_TUNES_DB_PATH || getDefaultDatabasePath();
@@ -2460,7 +2462,7 @@ function startEspHomeBridge(settings = getEspHomeSettings()) {
     host: settings.host,
     port: 6053,
     reconnect: true,
-    clientInfo: "kids-tunes",
+    clientInfo: APP_SERVICE_ID,
   });
 
   espHomeBridge.connection = connection;
@@ -4071,7 +4073,7 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Kids Tunes</title>
+    <title>${escapeHtml(APP_NAME)} - ${escapeHtml(pageTitle)}</title>
     <style>
       :root {
         color-scheme: light dark;
@@ -4108,6 +4110,14 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         margin: 0 0 4px;
         font-size: 2rem;
         line-height: 1.08;
+        letter-spacing: 0;
+      }
+
+      .brand-kicker {
+        margin-bottom: 7px;
+        color: #2f7d6e;
+        font-size: 0.78rem;
+        font-weight: 800;
         letter-spacing: 0;
       }
 
@@ -4934,6 +4944,7 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
     <main>
       <header>
         <div>
+          <div class="brand-kicker">${escapeHtml(APP_NAME)}</div>
           <h1>${escapeHtml(pageTitle)}</h1>
           <p>${escapeHtml(pageDescription)}</p>
         </div>
@@ -5243,7 +5254,8 @@ async function handleRequest(request, response) {
   if (request.method === "GET" && url.pathname === "/health") {
     sendJson(response, 200, {
       ok: true,
-      service: "kids-tunes",
+      service: APP_SERVICE_ID,
+      name: APP_NAME,
       database: {
         path: DB_PATH,
         exists: fs.existsSync(DB_PATH),
@@ -6078,7 +6090,7 @@ const server = http.createServer((request, response) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Kids Tunes listening at http://${HOST}:${PORT}`);
+  console.log(`${APP_NAME} listening at http://${HOST}:${PORT}`);
   console.log(`SQLite database: ${DB_PATH}`);
   startEspHomeBridge();
   startEspHomeWatchdog();

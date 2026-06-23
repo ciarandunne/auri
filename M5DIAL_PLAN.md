@@ -1,6 +1,6 @@
 # M5Dial Receiver Plan
 
-This note captures the current thinking for buying and testing two M5Stack Dial devices as upgraded Kids Tunes receivers.
+This note captures the current thinking for buying and testing two M5Stack Dial devices as upgraded Auri receivers.
 
 ## Decision
 
@@ -9,7 +9,7 @@ Buy two M5Dial devices:
 - One as an upgrade for Eabha.
 - One as Liam's first receiver.
 
-The M5Dial is a good fit for the long-term Kids Tunes direction because it combines:
+The M5Dial is a good fit for the long-term Auri direction because it combines:
 
 - RFID/NFC card scanning.
 - ESP32-S3 Wi-Fi.
@@ -21,7 +21,7 @@ The current PN532 ESPHome reader remains the stable baseline while the Dial path
 
 ## Why It Looks Viable
 
-Official M5Stack documentation says the M5Dial includes a 13.56 MHz RFID module supporting ISO/IEC 14443 Type A/B cards. The docs specifically recommend standard bank-card-sized RFID cards for reliable recognition, which matches the Kids Tunes cards.
+Official M5Stack documentation says the M5Dial includes a 13.56 MHz RFID module supporting ISO/IEC 14443 Type A/B cards. The docs specifically recommend standard bank-card-sized RFID cards for reliable recognition, which matches the Auri cards.
 
 The official M5Dial Arduino library includes an RFID example that reads card UIDs with:
 
@@ -43,8 +43,8 @@ Expected shape:
 ```text
 M5Dial RFID scan
 -> ESPHome rc522_i2c on_tag
--> HTTP POST to Kids Tunes /api/scan
--> Kids Tunes receiver routing
+-> HTTP POST to Auri /api/scan
+-> Auri receiver routing
 -> Spotify/Echo playback
 ```
 
@@ -52,7 +52,7 @@ Reason:
 
 - Keeps the device simple.
 - Keeps OTA/config workflow close to the current ESPHome reader.
-- Can post directly to Kids Tunes without Home Assistant being the main brain.
+- Can post directly to Auri without Home Assistant being the main brain.
 
 ## Fallback Firmware Route
 
@@ -63,7 +63,7 @@ Expected shape:
 ```text
 M5Dial Arduino firmware
 -> read RFID UID with official M5Dial library
--> POST JSON to Kids Tunes /api/scan
+-> POST JSON to Auri /api/scan
 ```
 
 Example scan payload:
@@ -92,10 +92,10 @@ The same card catalog should work on both receivers. The receiver ID decides whi
 
 1. Flash or load the simplest RFID test firmware.
 2. Confirm the M5Dial reads the existing bank-card-sized tags.
-3. Compare UID formatting against the current Kids Tunes card IDs.
+3. Compare UID formatting against the current Auri card IDs.
 4. Send a fake POST from a laptop using the proposed reader ID.
-5. Send a real POST from the M5Dial to Kids Tunes.
-6. Add `m5dial-eabha` as a receiver in Kids Tunes.
+5. Send a real POST from the M5Dial to Auri.
+6. Add `m5dial-eabha` as a receiver in Auri.
 7. Repeat for `m5dial-liam`.
 
 ## Risks

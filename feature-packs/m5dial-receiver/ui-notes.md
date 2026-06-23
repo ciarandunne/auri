@@ -2,7 +2,7 @@
 
 Not integrated.
 
-## Kids Tunes UI
+## Auri UI
 
 Use existing `/devices` receiver section first.
 

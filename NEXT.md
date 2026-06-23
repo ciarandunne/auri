@@ -1,6 +1,8 @@
-# Kids Tunes Next Steps
+# Auri Next Steps
 
 Use this file as the first handoff note when picking up the project in a new chat window.
+
+The app/product is now named **Auri**. It was formerly Kids Tunes. Technical deployment identifiers such as `kids-tunes`, `KIDS_TUNES_DB_PATH`, and `kids_tunes.db` currently remain in place to avoid disturbing the live Synology deployment.
 
 ## Read These First
 
@@ -57,7 +59,7 @@ feature-packs/retrospective/04-playlist-artwork-caching/
 
 ## Current State
 
-Kids Tunes now runs always-on from the Synology NAS Docker container at:
+Auri now runs always-on from the Synology NAS Docker container at:
 
 ```text
 http://192.168.5.55:8787/
@@ -97,7 +99,7 @@ Spotify credentials live in the NAS deployment `.env` file at `Z:\kids-tunes\.en
 
 Current state as of June 22, 2026:
 
-- Kids Tunes has been staged to `Z:\kids-tunes`.
+- Auri has been staged to `Z:\kids-tunes`.
 - Synology Container Manager is running the project from `/volume1/docker/kids-tunes`.
 - The app is live at:
 
@@ -111,7 +113,7 @@ http://192.168.5.55:8787/
 - ESPHome reader bridge is connected to `192.168.5.87`.
 - Spotify is authorized as `ciaran.dunne2`.
 - `Eabha's Echo Dot` is visible and card playback has worked from the NAS.
-- A hidden laptop-local Kids Tunes process was stopped so the NAS is the only active app brain.
+- A hidden laptop-local Auri/Kids Tunes process was stopped so the NAS is the only active app brain.
 
 Next operational checks:
 
@@ -157,13 +159,13 @@ http://127.0.0.1:8787/spotify/callback
 
 Laptop development validation, only when intentionally running the local app:
 
-1. Start Kids Tunes from the project folder:
+1. Start Auri from the project folder:
 
 ```powershell
 npm.cmd start
 ```
 
-2. Stop the NAS container or disable the reader bridge in one app first, so only one Kids Tunes instance is connected to the reader.
+2. Stop the NAS container or disable the reader bridge in one app first, so only one Auri instance is connected to the reader.
 3. Open `http://127.0.0.1:8787/reader` and confirm the watchdog shows on.
 4. Open `http://127.0.0.1:8787/api/spotify/devices` once to refresh/learn the current Echo Dot device ID/name.
 5. Open `http://127.0.0.1:8787/spotify` and confirm the Spotify section shows `Connected account: ciaran.dunne2`.
@@ -204,7 +206,7 @@ The intended stop behavior is: tap the active card a second time. We do not curr
 
 Test the new playlist import and next-card assignment flow end to end:
 
-1. Restart Kids Tunes:
+1. Restart Auri:
 
 ```powershell
 Ctrl+C
@@ -228,7 +230,7 @@ http://127.0.0.1:8787/media
 11. Tap that same card once to play it.
 12. Tap that same card a second time to pause/stop it.
 
-Safety check: if a known card is tapped during pending assignment, Kids Tunes should not overwrite it. It should log a blocked `assign_media` event and keep waiting for a blank/unknown card.
+Safety check: if a known card is tapped during pending assignment, Auri should not overwrite it. It should log a blocked `assign_media` event and keep waiting for a blank/unknown card.
 
 If playback does not start after assignment, check `/activity` first. It should show whether the scan assigned the card, tried playback, or hit a Spotify/device error.
 
@@ -420,7 +422,7 @@ The playlist-to-card assignment foundation has started:
   - linked in `card_media_assignments`;
   - recorded as an `assign_media` action event;
   - cleared from the pending state.
-- If a known card is scanned while an assignment is pending, Kids Tunes does not overwrite it and does not run its playback action. It records a blocked `assign_media` event and leaves the pending assignment open.
+- If a known card is scanned while an assignment is pending, Auri does not overwrite it and does not run its playback action. It records a blocked `assign_media` event and leaves the pending assignment open.
 - Pending assignment API endpoints:
 
 ```text
@@ -538,7 +540,7 @@ curl.exe -s http://127.0.0.1:8787/api/spotify/devices
 6. Add a Spotify/Echo volume panel showing the current reported Echo volume and easier volume controls:
    - Set the starting playback volume.
    - Set a maximum allowed volume level.
-   - Clamp playback commands so Kids Tunes never intentionally starts above the max volume.
+   - Clamp playback commands so Auri never intentionally starts above the max volume.
    - Consider periodically correcting the Echo back down if Spotify reports it above the max.
 7. Add a one-click manual "test selected Spotify device" button in the UI.
 8. Add a mobile-friendly parent web app/control surface:
@@ -586,7 +588,7 @@ curl.exe -s http://127.0.0.1:8787/api/spotify/devices
    - Implemented manual `Reconnect Reader` button on `/reader`.
    - Next validation: restart the app, confirm `/reader` shows watchdog on, tap one card, and confirm scan/playback still works.
 14. Make the app automatically recover when a saved Spotify device ID changes by matching the Echo Dot by name.
-   - Implemented foundation: Kids Tunes now stores `spotify_default_device_name`.
+   - Implemented foundation: Auri now stores `spotify_default_device_name`.
    - Playback/pause/volume commands resolve the current Spotify device ID from the saved name if the old ID disappears.
    - Next validation: create the local `.env` file, restart the app, open Spotify devices once, confirm the default device name is learned, then test a card.
 15. Add a Windows auto-start option so the app does not depend on manually running `npm.cmd start`.

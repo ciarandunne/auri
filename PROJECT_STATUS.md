@@ -1,4 +1,6 @@
-# Kids Tunes Project Status
+# Auri Project Status
+
+Formerly known as Kids Tunes. Technical paths and some historical notes still use Kids Tunes/kids-tunes where that is the real deployment/database name.
 
 This is an older background/history document. For current handoff notes, immediate next steps, and the roadmap, use `NEXT.md` as the standard project handoff file.
 
@@ -6,14 +8,14 @@ Last updated: 2026-06-07
 
 ## Project Goal
 
-Kids Tunes is a lightweight local replacement for the old Home Assistant-centered RFID-to-Sonos flow.
+Auri is a lightweight local replacement for the old Home Assistant-centered RFID-to-Sonos flow.
 
 Target flow:
 
 ```text
 NFC/RFID tag or card
 -> ESPHome tag reader
--> Kids Tunes local app
+-> Auri local app
 -> action routing
 -> Sonos, Spotify, or local NAS audio
 ```
@@ -182,7 +184,7 @@ Switch key: 1985256757
 Desired state: OFF
 ```
 
-Kids Tunes now sends `TagReader Buzzer Enabled = OFF` when the ESPHome bridge connects, because the reader can restore or return to buzzer-on after being unplugged/replugged.
+Auri now sends `TagReader Buzzer Enabled = OFF` when the ESPHome bridge connects, because the reader can restore or return to buzzer-on after being unplugged/replugged.
 
 The bridge subscribes to:
 
@@ -235,7 +237,7 @@ This path has now been proven end to end:
 ```text
 Google Pixel 10 tap
 -> ESPHome reader
--> Kids Tunes scan 26
+-> Auri scan 26
 -> reader test action sonos_play_url
 -> NAS MP3 URL
 -> Sonos Move playback
@@ -281,7 +283,7 @@ To test it, create a Spotify Developer app and add this redirect URI:
 http://127.0.0.1:8787/spotify/callback
 ```
 
-Then restart Kids Tunes with:
+Then restart Auri with:
 
 ```powershell
 $env:SPOTIFY_CLIENT_ID="your-client-id"
@@ -314,7 +316,7 @@ Spotify can change an Echo device ID after unplug/replug or moving rooms.
 When playback failed after the move, Spotify returned Device not found for the old ID.
 After waking the Dot in the new room, the new active ID was saved.
 Spotify currently reports Eabha's Office Dot supports_volume=true at the new ID.
-Kids Tunes now explicitly transfers Spotify playback to the configured Echo device before setting volume and starting playback; implicit `play?device_id=...` alone can return success without reliably waking the Echo session.
+Auri now explicitly transfers Spotify playback to the configured Echo device before setting volume and starting playback; implicit `play?device_id=...` alone can return success without reliably waking the Echo session.
 ```
 
 Working Deep Blue Sea card set:
@@ -478,7 +480,7 @@ It is good enough for local testing, but future work may split it into clearer s
 ### Then
 
 1. Decide whether to buy a small pack of NTAG cards/stickers.
-2. Decide whether to make a minimal ESPHome firmware change that sends HTTP requests directly to Kids Tunes.
+2. Decide whether to make a minimal ESPHome firmware change that sends HTTP requests directly to Auri.
 3. Add Spotify auth design before building more real playback behavior.
 4. Model playback as card content plus receiver-specific output, rather than binding each card to one speaker/account.
 

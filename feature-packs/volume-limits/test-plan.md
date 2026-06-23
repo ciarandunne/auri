@@ -12,8 +12,8 @@ Not integrated.
 
 1. Start Spotify on the Echo Dot.
 2. Set Echo volume high from Spotify app.
-3. Refresh current volume in Kids Tunes.
-4. Confirm Kids Tunes shows the high current volume.
+3. Refresh current volume in Auri.
+4. Confirm Auri shows the high current volume.
 5. Set max volume 35 and start volume 15.
 6. Scan a card.
 7. Confirm Echo starts at 15, not the previous high volume.

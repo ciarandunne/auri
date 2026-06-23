@@ -1,6 +1,8 @@
-# Kids Tunes NAS Deployment
+# Auri NAS Deployment
 
-Kids Tunes is now running always-on from Synology Container Manager.
+Auri is now running always-on from Synology Container Manager.
+
+Formerly known as Kids Tunes. The technical deployment folder/service currently remains `kids-tunes` to avoid disturbing the working NAS deployment.
 
 Live URL:
 
@@ -16,15 +18,15 @@ http://192.168.5.55:8787/health
 
 ## Target
 
-Run Kids Tunes on the Synology NAS instead of the laptop:
+Run Auri on the Synology NAS instead of the laptop:
 
 ```text
-RFID reader -> Synology Kids Tunes container -> Spotify/Echo
+RFID reader -> Synology Auri container -> Spotify/Echo
 ```
 
 The laptop is now only needed for editing/admin, not for bedtime playback.
 
-Do not leave a laptop-local Kids Tunes process running on `127.0.0.1:8787` while the NAS container is active. Both can connect to the ESPHome reader and double-handle card taps.
+Do not leave a laptop-local Auri/Kids Tunes process running on `127.0.0.1:8787` while the NAS container is active. Both can connect to the ESPHome reader and double-handle card taps.
 
 ## Current Live State
 

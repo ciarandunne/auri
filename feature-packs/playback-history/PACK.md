@@ -4,7 +4,7 @@ Status: forward feature pack, not integrated.
 
 ## Goal
 
-Track what Kids Tunes tried to play, pause, assign, or stop, and where it happened.
+Track what Auri tried to play, pause, assign, or stop, and where it happened.
 
 The history should answer:
 

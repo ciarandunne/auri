@@ -11,7 +11,7 @@ The feature should support:
 - Seeing the current reported Spotify/Echo volume where Spotify exposes it.
 - Setting a start volume used before playback begins.
 - Setting a maximum allowed volume.
-- Clamping Kids Tunes playback commands so they never intentionally start above the max.
+- Clamping Auri playback commands so they never intentionally start above the max.
 - Making volume behavior receiver-aware later, so Eabha and Liam can have different safe limits.
 
 ## Design Position
@@ -79,4 +79,4 @@ Prefer extending these rather than adding a separate volume subsystem.
 3. Clamp `getSpotifyStartVolumePercent()` or the call site in `sendSpotifyPlay`.
 4. Add current-volume display to Spotify settings.
 5. Add a manual refresh endpoint.
-6. Test with Echo volume at high value, then scan a card and verify Kids Tunes sets a safer value.
+6. Test with Echo volume at high value, then scan a card and verify Auri sets a safer value.

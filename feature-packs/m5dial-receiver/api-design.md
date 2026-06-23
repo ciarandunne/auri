@@ -17,7 +17,7 @@ Request:
 }
 ```
 
-This already matches Kids Tunes.
+This already matches Auri.
 
 ## Optional Receiver Status
 

@@ -53,4 +53,4 @@ POST /api/control/pause
 GET /api/control/status
 ```
 
-Should return the active playback state Kids Tunes knows about, and optionally Spotify current playback if available.
+Should return the active playback state Auri knows about, and optionally Spotify current playback if available.

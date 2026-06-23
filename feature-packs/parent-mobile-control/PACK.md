@@ -4,7 +4,7 @@ Status: forward feature pack, not integrated.
 
 ## Goal
 
-Create a phone-friendly page for parents to control Kids Tunes without touching RFID cards.
+Create a phone-friendly page for parents to control Auri without touching RFID cards.
 
 Parents should be able to:
 

@@ -1,6 +1,6 @@
-# Kids Tunes Feature Packs
+# Auri Feature Packs
 
-Feature packs are the remote-work format for Kids Tunes.
+Feature packs are the remote-work format for Auri.
 
 The goal is to prepare design, draft code, schema notes, API notes, UI thinking, risks, and laptop test plans without continuing to reshape the live app while away from the hardware.
 

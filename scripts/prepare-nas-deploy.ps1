@@ -60,7 +60,7 @@ if (Test-Path $DataSource) {
   }
 }
 
-Write-Host "Kids Tunes NAS deployment folder prepared:"
+Write-Host "Auri NAS deployment folder prepared:"
 Write-Host $OutputPath
 Write-Host ""
 Write-Host "Copy this folder to your Synology NAS, for example:"

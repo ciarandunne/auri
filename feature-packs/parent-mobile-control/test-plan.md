@@ -12,7 +12,7 @@ Not integrated.
 ## Laptop/Phone Tests
 
 1. Find laptop LAN IP.
-2. Start Kids Tunes bound to LAN host if needed.
+2. Start Auri bound to LAN host if needed.
 3. Open `/control` from phone browser.
 4. Tap one item.
 5. Confirm Echo plays it.

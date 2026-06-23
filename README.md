@@ -1,6 +1,8 @@
-# Kids Tunes
+# Auri
 
 A small local scan receiver for a DIY NFC/RFID music box.
+
+Formerly known as Kids Tunes. The user-facing app/product name is now **Auri**. Some technical identifiers still use `kids-tunes` so the working Synology deployment, Docker service, and database paths do not break.
 
 Phase 1 receives fake scan events, stores them in SQLite, and shows recent scans in a browser.
 Phase 2 adds known card assignments so a scanned tag can be named and recognized later.
@@ -14,7 +16,7 @@ For older background detail, see [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
 ## Run Locally On Windows
 
-The normal always-on app now runs on the Synology NAS:
+The normal always-on Auri app now runs on the Synology NAS:
 
 ```text
 http://192.168.5.55:8787/
@@ -74,7 +76,7 @@ The Tracks page is for imported tracks/episodes and card assignment. Spotify acc
 
 The ESPHome reader bridge can be enabled from the browser UI. For the current tag reader, use host/IP `192.168.5.87` and reader ID `tagreader-c6c6e4`. The bridge listens to ESPHome logs and Home Assistant service/event messages. If it detects a tag ID, it creates a normal scan event with source `esphome`.
 
-The bridge has a watchdog. It reconnects automatically if the ESPHome connection reports `disconnected` or `error`, if a connection attempt gets stuck, or after a long scheduled refresh interval. The Reader page also has a `Reconnect Reader` button for a manual reconnect without restarting Kids Tunes.
+The bridge has a watchdog. It reconnects automatically if the ESPHome connection reports `disconnected` or `error`, if a connection attempt gets stuck, or after a long scheduled refresh interval. The Reader page also has a `Reconnect Reader` button for a manual reconnect without restarting Auri.
 
 Current ESPHome status: the app can connect to the reader, receive `esphome.tag_scanned` events, and create normal scans from them. Repeated Google Pixel 10 taps created scans successfully, but each tap produced a different tag ID, so the phone is useful for debugging rather than as a stable card.
 
@@ -83,7 +85,7 @@ For Pixel-based testing, the app has a temporary reader test action. Unknown `es
 End-to-end playback has been proven with:
 
 ```text
-Pixel tap -> ESPHome reader -> Kids Tunes -> NAS MP3 URL -> Sonos Move
+Pixel tap -> ESPHome reader -> Auri -> NAS MP3 URL -> Sonos Move
 ```
 
 The first successful NAS media URL was:
@@ -254,9 +256,9 @@ Set this redirect URI in the Spotify Developer app:
 http://127.0.0.1:8787/spotify/callback
 ```
 
-If Spotify shows `redirect_uri: Not matching configuration`, the Developer app is missing that exact callback URL. Add it in the Spotify Developer Dashboard and save the app settings, then click `Connect Spotify` again in Kids Tunes.
+If Spotify shows `redirect_uri: Not matching configuration`, the Developer app is missing that exact callback URL. Add it in the Spotify Developer Dashboard and save the app settings, then click `Connect Spotify` again in Auri.
 
-If playback fails with `invalid_client` after changing `.env`, the saved Spotify token was issued for a different Developer app. Click `Connect Spotify` again so Kids Tunes stores a fresh token for the current Client ID/Secret.
+If playback fails with `invalid_client` after changing `.env`, the saved Spotify token was issued for a different Developer app. Click `Connect Spotify` again so Auri stores a fresh token for the current Client ID/Secret.
 
 Create a local `.env` file from the sample:
 
@@ -296,7 +298,7 @@ After media is imported, the Media page can assign a physical card:
 
 1. Click `Assign Next Card` beside an unassigned Spotify media item.
 2. Scan an unknown RFID/NFC card within 15 minutes.
-3. Kids Tunes creates the card, sets an enabled `spotify_play` action, and links it to the media item.
+3. Auri creates the card, sets an enabled `spotify_play` action, and links it to the media item.
 
 Known cards are protected during this flow. If a known card is scanned while an assignment is pending, the app records a blocked assignment event and leaves the pending assignment open.
 

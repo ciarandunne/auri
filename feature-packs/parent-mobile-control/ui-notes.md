@@ -35,4 +35,4 @@ Main content:
 
 From a phone, `127.0.0.1` means the phone itself, not the laptop.
 
-For mobile testing, Kids Tunes must be reachable at the laptop LAN IP or later on Synology.
+For mobile testing, Auri must be reachable at the laptop LAN IP or later on Synology.

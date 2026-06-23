@@ -4,12 +4,12 @@ Status: forward feature pack, not integrated.
 
 ## Goal
 
-Prepare the M5Dial v2 as the next Kids Tunes receiver hardware for Eabha and Liam.
+Prepare the M5Dial v2 as the next Auri receiver hardware for Eabha and Liam.
 
 The receiver should:
 
 - read bank-card-sized RFID/NFC cards;
-- send scan events to Kids Tunes;
+- send scan events to Auri;
 - identify which receiver/child it belongs to;
 - eventually use the screen/dial/button for useful local controls.
 
@@ -27,9 +27,9 @@ Preferred route:
 
 ## Proposed Scope For First Integration
 
-- Create one M5Dial receiver profile in Kids Tunes.
+- Create one M5Dial receiver profile in Auri.
 - Flash/test one M5Dial as an RFID scanner.
-- Send scan event as JSON to Kids Tunes if possible:
+- Send scan event as JSON to Auri if possible:
 
 ```json
 {
@@ -38,7 +38,7 @@ Preferred route:
 }
 ```
 
-- Confirm Kids Tunes routes based on `reader_id`.
+- Confirm Auri routes based on `reader_id`.
 
 ## Not In First Integration
 
@@ -80,7 +80,7 @@ or connect through ESPHome if using native API.
 2. Test one unit only.
 3. Identify RFID component and firmware path.
 4. Make it produce stable tag IDs.
-5. Send fake-equivalent scan into Kids Tunes.
+5. Send fake-equivalent scan into Auri.
 6. Create receiver profile `m5dial-eabha`.
 7. Test one known card.
 8. Clone/adapt for Liam after Eabha unit is stable.

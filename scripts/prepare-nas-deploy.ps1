@@ -1,17 +1,17 @@
 param(
-  [string]$OutputPath = "$env:USERPROFILE\Desktop\kids-tunes-nas"
+  [string]$OutputPath = "$env:USERPROFILE\Desktop\auri-nas"
 )
 
 $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$AppDataDb = Join-Path $env:LOCALAPPDATA "Kids Tunes\kids_tunes.db"
+$AppDataDb = Join-Path $env:LOCALAPPDATA "Auri\auri.db"
 $DataSource = Join-Path $ProjectRoot "data"
 $DataTarget = Join-Path $OutputPath "data"
 $OutputLeaf = Split-Path -Leaf $OutputPath
 
-if ([string]::IsNullOrWhiteSpace($OutputPath) -or $OutputLeaf -notmatch "kids-tunes") {
-  throw "OutputPath must point to a dedicated folder with 'kids-tunes' in the folder name. Current value: $OutputPath"
+if ([string]::IsNullOrWhiteSpace($OutputPath) -or $OutputLeaf -notmatch "auri") {
+  throw "OutputPath must point to a dedicated folder with 'auri' in the folder name. Current value: $OutputPath"
 }
 
 if ((Test-Path $OutputPath) -and (Resolve-Path $OutputPath).Path -eq (Resolve-Path $ProjectRoot).Path) {
@@ -19,7 +19,7 @@ if ((Test-Path $OutputPath) -and (Resolve-Path $OutputPath).Path -eq (Resolve-Pa
 }
 
 if (-not (Test-Path $AppDataDb)) {
-  throw "Could not find the current Kids Tunes database at $AppDataDb"
+  throw "Could not find the current Auri database at $AppDataDb"
 }
 
 if (-not (Test-Path (Join-Path $ProjectRoot ".env"))) {
@@ -48,7 +48,7 @@ foreach ($file in $files) {
   Copy-Item -LiteralPath (Join-Path $ProjectRoot $file) -Destination (Join-Path $OutputPath $file)
 }
 
-Copy-Item -LiteralPath $AppDataDb -Destination (Join-Path $DataTarget "kids_tunes.db")
+Copy-Item -LiteralPath $AppDataDb -Destination (Join-Path $DataTarget "auri.db")
 
 if (Test-Path $DataSource) {
   foreach ($item in Get-ChildItem -LiteralPath $DataSource -Force) {
@@ -64,4 +64,4 @@ Write-Host "Auri NAS deployment folder prepared:"
 Write-Host $OutputPath
 Write-Host ""
 Write-Host "Copy this folder to your Synology NAS, for example:"
-Write-Host "/volume1/docker/kids-tunes"
+Write-Host "/volume1/docker/auri"

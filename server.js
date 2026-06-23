@@ -13,7 +13,7 @@ const APP_NAME = "Auri";
 const APP_SERVICE_ID = "auri";
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "127.0.0.1";
-const DB_PATH = process.env.KIDS_TUNES_DB_PATH || getDefaultDatabasePath();
+const DB_PATH = process.env.AURI_DB_PATH || getDefaultDatabasePath();
 const ESPHOME_SCAN_DEBOUNCE_MS = 2500;
 const ESPHOME_WATCHDOG_INTERVAL_MS = 60_000;
 const ESPHOME_RECONNECT_BACKOFF_MS = 30_000;
@@ -507,10 +507,10 @@ const countMediaItems = db.prepare("SELECT COUNT(*) AS media_item_count FROM med
 
 function getDefaultDatabasePath() {
   if (process.platform === "win32" && process.env.LOCALAPPDATA) {
-    return path.join(process.env.LOCALAPPDATA, "Kids Tunes", "kids_tunes.db");
+    return path.join(process.env.LOCALAPPDATA, "Auri", "auri.db");
   }
 
-  return path.join(__dirname, "data", "kids_tunes.db");
+  return path.join(__dirname, "data", "auri.db");
 }
 
 function ensureColumn(tableName, columnName, columnDefinition) {

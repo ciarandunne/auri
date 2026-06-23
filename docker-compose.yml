@@ -1,7 +1,7 @@
 services:
-  kids-tunes:
+  auri:
     build: .
-    container_name: kids-tunes
+    container_name: auri
     ports:
       - "8787:8787"
     env_file:
@@ -11,6 +11,6 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8787
-      KIDS_TUNES_DB_PATH: /app/data/kids_tunes.db
+      AURI_DB_PATH: /app/data/auri.db
       TZ: America/New_York
     restart: unless-stopped

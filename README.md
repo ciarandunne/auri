@@ -2,7 +2,7 @@
 
 A small local scan receiver for a DIY NFC/RFID music box.
 
-Formerly known as Kids Tunes. The user-facing app/product name is now **Auri**. Some technical identifiers still use `kids-tunes` so the working Synology deployment, Docker service, and database paths do not break.
+Formerly known as Auri. The user-facing app/product name is now **Auri**. Some technical identifiers still use `auri` so the working Synology deployment, Docker service, and database paths do not break.
 
 Phase 1 receives fake scan events, stores them in SQLite, and shows recent scans in a browser.
 Phase 2 adds known card assignments so a scanned tag can be named and recognized later.
@@ -91,7 +91,7 @@ Pixel tap -> ESPHome reader -> Auri -> NAS MP3 URL -> Sonos Move
 The first successful NAS media URL was:
 
 ```text
-http://192.168.5.55/Kids-Tunes-Test/02%20Babe%20I%27m%20Gonna%20Leave%20You.mp3
+http://192.168.5.55/Auri-Test/02%20Babe%20I%27m%20Gonna%20Leave%20You.mp3
 ```
 
 Recent scans as JSON:
@@ -105,13 +105,13 @@ http://localhost:8787/api/scans
 The live always-on deployment runs from Synology Container Manager using:
 
 ```text
-/volume1/docker/kids-tunes/docker-compose.yml
+/volume1/docker/auri/docker-compose.yml
 ```
 
 From Windows, that folder is available through the mapped Synology share:
 
 ```text
-Z:\kids-tunes
+Z:\auri
 ```
 
 Live app URL:
@@ -135,13 +135,13 @@ docker compose up --build
 The SQLite database is stored at:
 
 ```text
-%LOCALAPPDATA%\Kids Tunes\kids_tunes.db
+%LOCALAPPDATA%\Auri\auri.db
 ```
 
 When running in Docker, the SQLite database is stored at:
 
 ```text
-data/kids_tunes.db
+data/auri.db
 ```
 
 For the always-on Synology NAS setup, follow [NAS_DEPLOYMENT.md](NAS_DEPLOYMENT.md). The NAS path copies the existing SQLite database so Spotify tokens, cards, and actions survive the move.

@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 const projectRoot = process.cwd();
 const outputDir = path.join(projectRoot, "data", "spotify-artwork");
 const manifestPath = path.join(outputDir, "manifest.json");
-const databasePath = path.join(process.env.LOCALAPPDATA || "", "Kids Tunes", "kids_tunes.db");
+const databasePath = path.join(process.env.LOCALAPPDATA || "", "Auri", "auri.db");
 
 function getSetting(db, key, fallback = "") {
   return db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key)?.value || fallback;
@@ -204,7 +204,7 @@ function getSpotifyCards(db) {
 
 async function main() {
   if (!process.env.LOCALAPPDATA) {
-    throw new Error("LOCALAPPDATA is not set; cannot find the Kids Tunes database.");
+    throw new Error("LOCALAPPDATA is not set; cannot find the Auri database.");
   }
 
   fs.mkdirSync(outputDir, { recursive: true });

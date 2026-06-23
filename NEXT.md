@@ -2,7 +2,7 @@
 
 Use this file as the first handoff note when picking up the project in a new chat window.
 
-The app/product is now named **Auri**. It was formerly Kids Tunes. Technical deployment identifiers such as `kids-tunes`, `KIDS_TUNES_DB_PATH`, and `kids_tunes.db` currently remain in place to avoid disturbing the live Synology deployment.
+The app/product is named **Auri**. Technical deployment identifiers now use Auri names such as `auri`, `AURI_DB_PATH`, and `auri.db`.
 
 ## Read These First
 
@@ -65,7 +65,7 @@ Auri now runs always-on from the Synology NAS Docker container at:
 http://192.168.5.55:8787/
 ```
 
-The old laptop-local app should normally stay stopped. Do not run `npm.cmd start` on the laptop at the same time as the NAS container unless deliberately doing development/testing, because both instances can connect to the RFID reader and double-handle card taps.
+The laptop-local app should normally stay stopped. Do not run `npm.cmd start` on the laptop at the same time as the NAS container unless deliberately doing development/testing, because both instances can connect to the RFID reader and double-handle card taps.
 
 The current prototype can:
 
@@ -84,36 +84,36 @@ Hardware direction: buy two M5Dial devices, one as Eabha's upgraded receiver and
 The live SQLite database now lives in the Synology container data folder:
 
 ```text
-/volume1/docker/kids-tunes/data/kids_tunes.db
+/volume1/docker/auri/data/auri.db
 ```
 
 The old laptop database still exists as a development/snapshot copy:
 
 ```text
-C:\Users\ciara\AppData\Local\Kids Tunes\kids_tunes.db
+C:\Users\ciara\AppData\Local\Auri\auri.db
 ```
 
-Spotify credentials live in the NAS deployment `.env` file at `Z:\kids-tunes\.env` from Windows, which maps to `/volume1/docker/kids-tunes/.env` on Synology. The `.env` file is ignored by git.
+Spotify credentials live in the NAS deployment `.env` file at `Z:\auri\.env` from Windows, which maps to `/volume1/docker/auri/.env` on Synology. The `.env` file is ignored by git.
 
 ## Immediate Next Action
 
 Current state as of June 22, 2026:
 
-- Auri has been staged to `Z:\kids-tunes`.
-- Synology Container Manager is running the project from `/volume1/docker/kids-tunes`.
-- The app is live at:
+- Auri has been staged to `Z:\auri`.
+- The new Synology project should be named `auri` and run from `/volume1/docker/auri`.
+- The app should be live at this URL after cutover:
 
 ```text
 http://192.168.5.55:8787/
 ```
 
-- `/health` returns `ok: true`.
-- The NAS database is mounted at `/app/data/kids_tunes.db`.
+- `/health` should return `ok: true` after cutover.
+- The NAS database is mounted at `/app/data/auri.db`.
 - Existing cards/actions/media migrated successfully.
 - ESPHome reader bridge is connected to `192.168.5.87`.
 - Spotify is authorized as `ciaran.dunne2`.
 - `Eabha's Echo Dot` is visible and card playback has worked from the NAS.
-- A hidden laptop-local Auri/Kids Tunes process was stopped so the NAS is the only active app brain.
+- The laptop-local Auri process should stay stopped so the NAS is the only active app brain.
 
 Next operational checks:
 

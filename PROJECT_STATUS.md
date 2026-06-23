@@ -1,6 +1,6 @@
 # Auri Project Status
 
-Formerly known as Kids Tunes. Technical paths and some historical notes still use Kids Tunes/kids-tunes where that is the real deployment/database name.
+Formerly known as Auri. Technical paths and some historical notes still use Auri/auri where that is the real deployment/database name.
 
 This is an older background/history document. For current handoff notes, immediate next steps, and the roadmap, use `NEXT.md` as the standard project handoff file.
 
@@ -42,7 +42,7 @@ The current prototype is a Node app using:
 - Node's built-in SQLite module
 - `esphome-native-api` for the ESPHome native API bridge
 - A plain server-rendered HTML UI
-- SQLite storage at `%LOCALAPPDATA%\Kids Tunes\kids_tunes.db` on Windows
+- SQLite storage at `%LOCALAPPDATA%\Auri\auri.db` on Windows
 
 The app runs locally at:
 
@@ -248,7 +248,7 @@ Successful action event:
 ```text
 action_event_id: 17
 status: sent
-target: http://192.168.5.55/Kids-Tunes-Test/02%20Babe%20I%27m%20Gonna%20Leave%20You.mp3
+target: http://192.168.5.55/Auri-Test/02%20Babe%20I%27m%20Gonna%20Leave%20You.mp3
 message: Reader test action: Sent Sonos URL playback to Sonos Move via receiver default
 ```
 

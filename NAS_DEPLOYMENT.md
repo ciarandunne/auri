@@ -2,7 +2,7 @@
 
 Auri is now running always-on from Synology Container Manager.
 
-Formerly known as Kids Tunes. The technical deployment folder/service currently remains `kids-tunes` to avoid disturbing the working NAS deployment.
+The deployment folder, Docker service, container name, environment variable, and database file now use Auri names.
 
 Live URL:
 
@@ -26,22 +26,23 @@ RFID reader -> Synology Auri container -> Spotify/Echo
 
 The laptop is now only needed for editing/admin, not for bedtime playback.
 
-Do not leave a laptop-local Auri/Kids Tunes process running on `127.0.0.1:8787` while the NAS container is active. Both can connect to the ESPHome reader and double-handle card taps.
+Do not leave a laptop-local Auri process running on `127.0.0.1:8787` while the NAS container is active. Both can connect to the ESPHome reader and double-handle card taps.
 
 ## Current Live State
 
-As of June 22, 2026:
+As of June 22, 2026, the Auri deployment folder has been prepared for cutover:
 
 - Synology share is mapped in Windows as `Z:`.
-- Deployment folder is `Z:\kids-tunes`.
-- Synology path is `/volume1/docker/kids-tunes`.
-- Container Manager project is running on port `8787`.
-- `/health` returns `ok: true`.
-- The container database path is `/app/data/kids_tunes.db`.
+- Deployment folder is `Z:\auri`.
+- Synology path is `/volume1/docker/auri`.
+- Container Manager should use project name `auri`.
+- The project should run on port `8787`.
+- The container database path is `/app/data/auri.db`.
+- The copied database is `Z:\auri\data\auri.db`.
 - ESPHome reader bridge is connected to `192.168.5.87`.
 - Spotify is authorized as `ciaran.dunne2`.
 - `Eabha's Echo Dot` is visible to Spotify.
-- A physical card tap has played successfully through the NAS-hosted app.
+- After cutover, validate `/health`, Spotify devices, reader status, and one physical card tap.
 
 ## Important Spotify Note
 
@@ -60,20 +61,20 @@ For the first move, keep using the existing token by migrating the database.
 Create a Synology folder such as:
 
 ```text
-/volume1/docker/kids-tunes
+/volume1/docker/auri
 ```
 
 The safest way to stage the files on Windows is:
 
 ```powershell
-cd "C:\Users\ciara\OneDrive\Documents\Kids Tunes"
+cd "C:\Users\ciara\OneDrive\Documents\Auri"
 .\scripts\prepare-nas-deploy.ps1
 ```
 
 That creates:
 
 ```text
-C:\Users\ciara\Desktop\kids-tunes-nas
+C:\Users\ciara\Desktop\auri-nas
 ```
 
 Then copy that folder's contents to the Synology folder.
@@ -97,32 +98,32 @@ Do not commit `.env`; it contains Spotify credentials.
 On the Windows laptop, the current database is:
 
 ```text
-C:\Users\ciara\AppData\Local\Kids Tunes\kids_tunes.db
+C:\Users\ciara\AppData\Local\Auri\auri.db
 ```
 
 Copy it to the NAS deployment folder as:
 
 ```text
-/volume1/docker/kids-tunes/data/kids_tunes.db
+/volume1/docker/auri/data/auri.db
 ```
 
 Also copy the current app data folder if possible:
 
 ```text
-C:\Users\ciara\OneDrive\Documents\Kids Tunes\data
+C:\Users\ciara\OneDrive\Documents\Auri\data
 ```
 
 to:
 
 ```text
-/volume1/docker/kids-tunes/data
+/volume1/docker/auri/data
 ```
 
 That preserves cached Spotify artwork and print sheets.
 
 ## Environment File
 
-Create `/volume1/docker/kids-tunes/.env` from `.env.example`.
+Create `/volume1/docker/auri/.env` from `.env.example`.
 
 Minimum:
 
@@ -131,7 +132,7 @@ SPOTIFY_CLIENT_ID=your-client-id
 SPOTIFY_CLIENT_SECRET=your-client-secret
 HOST=0.0.0.0
 PORT=8787
-KIDS_TUNES_DB_PATH=/app/data/kids_tunes.db
+AURI_DB_PATH=/app/data/auri.db
 ```
 
 Normally do not set `SPOTIFY_REDIRECT_URI` for the first NAS move. The copied database token should avoid a new Spotify login.
@@ -147,7 +148,7 @@ docker compose up -d --build
 Check logs:
 
 ```sh
-docker compose logs -f kids-tunes
+docker compose logs -f auri
 ```
 
 Open from a browser on the home network:
@@ -203,13 +204,13 @@ docker compose down
 Then keep using the laptop version:
 
 ```powershell
-cd "C:\Users\ciara\OneDrive\Documents\Kids Tunes"
+cd "C:\Users\ciara\OneDrive\Documents\Auri"
 npm.cmd start
 ```
 
 ## Later Hardening
 
 - Put the NAS container behind HTTPS for clean Spotify reauthorization.
-- Add backup/export instructions for `data/kids_tunes.db`.
+- Add backup/export instructions for `data/auri.db`.
 - Add an app page showing whether the server is running on laptop or NAS.
 - Add clearer diagnostics when the ESPHome bridge reconnects or drops.

@@ -4,10 +4,13 @@ services:
     container_name: kids-tunes
     ports:
       - "8787:8787"
+    env_file:
+      - .env
     volumes:
       - ./data:/app/data
     environment:
       HOST: 0.0.0.0
       PORT: 8787
       KIDS_TUNES_DB_PATH: /app/data/kids_tunes.db
+      TZ: America/New_York
     restart: unless-stopped

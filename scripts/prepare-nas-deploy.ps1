@@ -1,0 +1,67 @@
+param(
+  [string]$OutputPath = "$env:USERPROFILE\Desktop\kids-tunes-nas"
+)
+
+$ErrorActionPreference = "Stop"
+
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
+$AppDataDb = Join-Path $env:LOCALAPPDATA "Kids Tunes\kids_tunes.db"
+$DataSource = Join-Path $ProjectRoot "data"
+$DataTarget = Join-Path $OutputPath "data"
+$OutputLeaf = Split-Path -Leaf $OutputPath
+
+if ([string]::IsNullOrWhiteSpace($OutputPath) -or $OutputLeaf -notmatch "kids-tunes") {
+  throw "OutputPath must point to a dedicated folder with 'kids-tunes' in the folder name. Current value: $OutputPath"
+}
+
+if ((Test-Path $OutputPath) -and (Resolve-Path $OutputPath).Path -eq (Resolve-Path $ProjectRoot).Path) {
+  throw "Refusing to replace the project folder. Choose a separate output folder."
+}
+
+if (-not (Test-Path $AppDataDb)) {
+  throw "Could not find the current Kids Tunes database at $AppDataDb"
+}
+
+if (-not (Test-Path (Join-Path $ProjectRoot ".env"))) {
+  throw "Could not find .env in $ProjectRoot"
+}
+
+if (Test-Path $OutputPath) {
+  Remove-Item -LiteralPath $OutputPath -Recurse -Force
+}
+
+New-Item -ItemType Directory -Path $OutputPath | Out-Null
+New-Item -ItemType Directory -Path $DataTarget | Out-Null
+
+$files = @(
+  "Dockerfile",
+  "docker-compose.yml",
+  "package.json",
+  "package-lock.json",
+  "server.js",
+  ".env",
+  ".env.example",
+  "NAS_DEPLOYMENT.md"
+)
+
+foreach ($file in $files) {
+  Copy-Item -LiteralPath (Join-Path $ProjectRoot $file) -Destination (Join-Path $OutputPath $file)
+}
+
+Copy-Item -LiteralPath $AppDataDb -Destination (Join-Path $DataTarget "kids_tunes.db")
+
+if (Test-Path $DataSource) {
+  foreach ($item in Get-ChildItem -LiteralPath $DataSource -Force) {
+    if ($item.Name -eq ".gitkeep") {
+      continue
+    }
+
+    Copy-Item -LiteralPath $item.FullName -Destination $DataTarget -Recurse -Force
+  }
+}
+
+Write-Host "Kids Tunes NAS deployment folder prepared:"
+Write-Host $OutputPath
+Write-Host ""
+Write-Host "Copy this folder to your Synology NAS, for example:"
+Write-Host "/volume1/docker/kids-tunes"

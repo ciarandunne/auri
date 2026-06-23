@@ -8,8 +8,9 @@ Use this file as the first handoff note when picking up the project in a new cha
 2. `feature-packs/README.md` - remote-work process and prepared feature/validation packs.
 3. `PROJECT_STATUS.md` - older background/history only.
 4. `README.md` - local run/test instructions and endpoint examples.
-5. `M5DIAL_PLAN.md` - plan and evidence for buying/testing two M5Dial receivers.
-6. `server.js` - current app implementation.
+5. `NAS_DEPLOYMENT.md` - always-on Synology deployment plan and migration checklist.
+6. `M5DIAL_PLAN.md` - plan and evidence for buying/testing two M5Dial receivers.
+7. `server.js` - current app implementation.
 
 ## Remote Work Rule
 
@@ -56,11 +57,13 @@ feature-packs/retrospective/04-playlist-artwork-caching/
 
 ## Current State
 
-Kids Tunes is a local Node/SQLite app running at:
+Kids Tunes now runs always-on from the Synology NAS Docker container at:
 
 ```text
-http://127.0.0.1:8787/
+http://192.168.5.55:8787/
 ```
+
+The old laptop-local app should normally stay stopped. Do not run `npm.cmd start` on the laptop at the same time as the NAS container unless deliberately doing development/testing, because both instances can connect to the RFID reader and double-handle card taps.
 
 The current prototype can:
 
@@ -76,52 +79,97 @@ The current prototype can:
 
 Hardware direction: buy two M5Dial devices, one as Eabha's upgraded receiver and one as Liam's receiver. See `M5DIAL_PLAN.md`.
 
-The SQLite database lives at:
+The live SQLite database now lives in the Synology container data folder:
+
+```text
+/volume1/docker/kids-tunes/data/kids_tunes.db
+```
+
+The old laptop database still exists as a development/snapshot copy:
 
 ```text
 C:\Users\ciara\AppData\Local\Kids Tunes\kids_tunes.db
 ```
 
-The app is normally started manually from PowerShell with:
-
-```powershell
-npm.cmd start
-```
-
-Spotify credentials should now live in a local `.env` file. Copy `.env.example` to `.env`, add the real Spotify Developer client id and secret, then restart with `npm.cmd start`. The `.env` file is ignored by git.
+Spotify credentials live in the NAS deployment `.env` file at `Z:\kids-tunes\.env` from Windows, which maps to `/volume1/docker/kids-tunes/.env` on Synology. The `.env` file is ignored by git.
 
 ## Immediate Next Action
 
-Current state as of June 14, 2026:
+Current state as of June 22, 2026:
 
-- `.env` has `ciaran.dunne2` Spotify Developer app credentials.
-- The Spotify Developer app must include this redirect URI exactly:
+- Kids Tunes has been staged to `Z:\kids-tunes`.
+- Synology Container Manager is running the project from `/volume1/docker/kids-tunes`.
+- The app is live at:
+
+```text
+http://192.168.5.55:8787/
+```
+
+- `/health` returns `ok: true`.
+- The NAS database is mounted at `/app/data/kids_tunes.db`.
+- Existing cards/actions/media migrated successfully.
+- ESPHome reader bridge is connected to `192.168.5.87`.
+- Spotify is authorized as `ciaran.dunne2`.
+- `Eabha's Echo Dot` is visible and card playback has worked from the NAS.
+- A hidden laptop-local Kids Tunes process was stopped so the NAS is the only active app brain.
+
+Next operational checks:
+
+1. Use the NAS URL, not localhost:
+
+```text
+http://192.168.5.55:8787/
+```
+
+2. Confirm health:
+
+```text
+http://192.168.5.55:8787/health
+```
+
+3. Confirm the reader:
+
+```text
+http://192.168.5.55:8787/reader
+```
+
+4. Confirm Spotify devices:
+
+```text
+http://192.168.5.55:8787/api/spotify/devices
+```
+
+5. Tap one physical card and confirm playback.
+
+Avoid re-running Spotify auth on the NAS until we have an HTTPS reverse proxy or a temporary tunnel plan, because Spotify may reject non-loopback HTTP redirect URIs. The currently copied SQLite database already contains a working Spotify refresh token.
+
+Historical laptop Spotify callback:
 
 ```text
 http://127.0.0.1:8787/spotify/callback
 ```
 
-- `Connect Spotify` has been re-run successfully.
-- Physical RFID cards scan and play Spotify on `Eabha's Office Dot`.
-- Spotify device-name fallback is implemented.
-- ESPHome reader watchdog is implemented in code.
-- `/media` is now the Tracks page; Spotify management has moved to `/spotify`.
+If running a temporary laptop development copy, the Spotify Developer app must include this redirect URI exactly:
 
-Next validation after any restart:
+```text
+http://127.0.0.1:8787/spotify/callback
+```
 
-1. Restart Kids Tunes from the project folder:
+Laptop development validation, only when intentionally running the local app:
+
+1. Start Kids Tunes from the project folder:
 
 ```powershell
-Ctrl+C
 npm.cmd start
 ```
 
-2. Open `http://127.0.0.1:8787/reader` and confirm the watchdog shows on.
-3. Open `http://127.0.0.1:8787/api/spotify/devices` once to refresh/learn the current Echo Dot device ID/name.
-4. Open `http://127.0.0.1:8787/spotify` and confirm the Spotify section shows `Connected account: ciaran.dunne2`.
-5. Tap one physical card and confirm playback.
-6. If Spotify import/playback reports `invalid_client`, click `Connect Spotify` again. If Spotify shows `redirect_uri: Not matching configuration`, add the callback URL above to the Spotify Developer app.
-7. If a card tap does not play, check recent scans/action events:
+2. Stop the NAS container or disable the reader bridge in one app first, so only one Kids Tunes instance is connected to the reader.
+3. Open `http://127.0.0.1:8787/reader` and confirm the watchdog shows on.
+4. Open `http://127.0.0.1:8787/api/spotify/devices` once to refresh/learn the current Echo Dot device ID/name.
+5. Open `http://127.0.0.1:8787/spotify` and confirm the Spotify section shows `Connected account: ciaran.dunne2`.
+6. Tap one physical card and confirm playback.
+7. If Spotify import/playback reports `invalid_client`, click `Connect Spotify` again. If Spotify shows `redirect_uri: Not matching configuration`, add the callback URL above to the Spotify Developer app.
+8. If a card tap does not play, check recent scans/action events:
    - If no scan appears, the ESP bridge or reader connection is the problem.
    - If a scan appears but no action event appears, the card/action mapping is the problem.
    - If an action event appears with a Spotify error, Spotify auth/device routing is the problem.
@@ -282,7 +330,7 @@ node --disable-warning=ExperimentalWarning scripts/fetch-spotify-artwork.mjs
 
 Note: `data/*` is currently ignored by Git, so these downloaded artwork files are saved locally but are not part of a future commit unless we intentionally change `.gitignore`.
 
-A three-artwork printable test sheet has been generated here:
+A printable credit-card artwork template has been generated here:
 
 ```text
 data/print-sheets/spotify-artwork-test-sheet.pdf
@@ -300,7 +348,9 @@ The generator script is:
 node scripts/create-label-test-sheet.mjs
 ```
 
-The test sheet uses three uncropped Spotify artwork images at 48 mm square, with whitespace between labels for scissor cutting.
+The generator exports `generatePrintableTemplate()` and `createCreditCardArtworkTemplateHtml()`.
+By default it creates a US Letter sheet of CR80 credit-card outlines, with uncropped 48 mm square Spotify artwork centered inside each 85.6 mm x 54 mm card and a 3 mm safe border so the artwork does not run to the card edge.
+Use `--paper=a4` for an A4 version.
 
 The media library foundation has started. Existing Spotify card actions are synced into:
 

@@ -14,6 +14,14 @@ For older background detail, see [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
 ## Run Locally On Windows
 
+The normal always-on app now runs on the Synology NAS:
+
+```text
+http://192.168.5.55:8787/
+```
+
+Use the local Windows run only for development. Do not run the laptop app and NAS app against the RFID reader at the same time unless deliberately testing, because both can react to the same card scan.
+
 Install dependencies once:
 
 ```powershell
@@ -92,6 +100,32 @@ http://localhost:8787/api/scans
 
 ## Docker
 
+The live always-on deployment runs from Synology Container Manager using:
+
+```text
+/volume1/docker/kids-tunes/docker-compose.yml
+```
+
+From Windows, that folder is available through the mapped Synology share:
+
+```text
+Z:\kids-tunes
+```
+
+Live app URL:
+
+```text
+http://192.168.5.55:8787/
+```
+
+Live health check:
+
+```text
+http://192.168.5.55:8787/health
+```
+
+For local Docker testing:
+
 ```powershell
 docker compose up --build
 ```
@@ -106,6 +140,14 @@ When running in Docker, the SQLite database is stored at:
 
 ```text
 data/kids_tunes.db
+```
+
+For the always-on Synology NAS setup, follow [NAS_DEPLOYMENT.md](NAS_DEPLOYMENT.md). The NAS path copies the existing SQLite database so Spotify tokens, cards, and actions survive the move.
+
+To prepare a NAS-ready folder on Windows:
+
+```powershell
+.\scripts\prepare-nas-deploy.ps1
 ```
 
 ## API

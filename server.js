@@ -3503,12 +3503,16 @@ function renderMediaLibrary(mediaItems, pendingAssignment = null) {
         const isPending = pendingAssignment && pendingAssignment.media_item_id === item.id;
         const canAssign = item.assignment_status === "unassigned" && item.provider === "spotify";
         const printLabel = PRINT_STATUS_LABELS[item.print_status] || item.print_status;
+        const assignmentLabel = item.assignment_status === "assigned" ? "Assigned" : "Unassigned";
+        const assignmentStatusClass = item.assignment_status === "assigned" ? "assigned" : "unassigned";
+        const printStatusClass = item.print_status.replace(/[^a-z0-9_-]/gi, "-");
         const playlistStatus = item.playlist_status === "removed_from_playlist" ? "removed" : "in playlist";
         const artworkState = item.local_artwork_path ? "Artwork cached" : "No local artwork";
+        const artistOrShow = item.artist_names || item.show_name || item.subtitle || item.album_name || "Unknown";
         const assignmentControl = isPending
           ? `
               <form class="inline-form" method="post" action="/media/assign-next/cancel">
-                <span class="action-status">waiting for card</span>
+                <span class="action-status status-pending">Waiting for card</span>
                 <button type="submit">Cancel</button>
               </form>
             `
@@ -3516,12 +3520,10 @@ function renderMediaLibrary(mediaItems, pendingAssignment = null) {
             ? `
                 <form class="inline-form" method="post" action="/media/assign-next">
                   <input type="hidden" name="media_item_id" value="${escapeHtml(item.id)}">
-                  <button type="submit">Assign Next Card</button>
+                  <button type="submit">Assign next</button>
                 </form>
               `
-            : item.assignment_status === "assigned"
-              ? `<span class="action-status">Assigned</span>`
-              : `<span class="muted small-text">Not assignable</span>`;
+            : "";
 
         return `
         <article class="media-card" data-filter-row data-search="${escapeHtml(searchText.toLowerCase())}">
@@ -3534,15 +3536,19 @@ function renderMediaLibrary(mediaItems, pendingAssignment = null) {
           </div>
           <div class="media-card-main">
             <div class="media-card-title-row">
-              <div>
-                <strong>${escapeHtml(item.title)}</strong>
-                <span class="small-text">${escapeHtml(item.subtitle) || `<span class="muted">No subtitle</span>`}</span>
-              </div>
-              <span class="pill known">${escapeHtml(item.media_type)}</span>
+              <dl class="media-card-fields">
+                <div>
+                  <dt>Track</dt>
+                  <dd>${escapeHtml(item.title)}</dd>
+                </div>
+                <div>
+                  <dt>Artist / show</dt>
+                  <dd>${escapeHtml(artistOrShow)}</dd>
+                </div>
+              </dl>
             </div>
 
             <div class="media-card-meta">
-              <span>${escapeHtml(item.provider)}</span>
               ${
                 item.imported_from_title
                   ? `<span>${escapeHtml(item.imported_from_title)}</span>`
@@ -3553,30 +3559,32 @@ function renderMediaLibrary(mediaItems, pendingAssignment = null) {
             </div>
 
             <div class="media-card-statuses">
-              <span class="action-status">${escapeHtml(item.assignment_status)}</span>
-              <span class="action-status">${escapeHtml(printLabel)}</span>
-            </div>
-
-            <div class="media-card-detail">
-              <span>${item.assigned_card_names.length ? escapeHtml(item.assigned_card_names.join(", ")) : "No card assigned"}</span>
-              <code>${escapeHtml(item.provider_uri)}</code>
+              <span class="action-status status-${assignmentStatusClass}">${escapeHtml(assignmentLabel)}</span>
             </div>
 
             <div class="media-card-actions">
               <div>
                 <span class="mini-label">Print</span>
-                <form class="inline-form print-status-form" method="post" action="/media/print-status">
-                  <input type="hidden" name="media_item_id" value="${escapeHtml(item.id)}">
-                  <select name="print_status" aria-label="Print status for ${escapeHtml(item.title)}">
-                    ${renderPrintStatusOptions(item.print_status)}
-                  </select>
-                  <button type="submit">Save</button>
-                </form>
+                <div class="print-status-editor">
+                  <span class="action-status status-${escapeHtml(printStatusClass)}">${escapeHtml(printLabel)}</span>
+                  <button type="button" class="secondary-button" data-toggle-print>Edit</button>
+                  <form class="inline-form print-status-form hidden-print-form" method="post" action="/media/print-status">
+                    <input type="hidden" name="media_item_id" value="${escapeHtml(item.id)}">
+                    <select name="print_status" aria-label="Print status for ${escapeHtml(item.title)}">
+                      ${renderPrintStatusOptions(item.print_status)}
+                    </select>
+                    <button type="submit">Save</button>
+                  </form>
+                </div>
               </div>
-              <div>
-                <span class="mini-label">Card</span>
-                ${assignmentControl}
-              </div>
+              ${
+                assignmentControl
+                  ? `<div>
+                      <span class="mini-label">Assignment</span>
+                      ${assignmentControl}
+                    </div>`
+                  : ""
+              }
             </div>
           </div>
         </article>
@@ -4706,6 +4714,31 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         line-height: 1.25;
       }
 
+      .media-card-fields {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+      }
+
+      .media-card-fields div {
+        display: grid;
+        gap: 2px;
+      }
+
+      .media-card-fields dt {
+        color: var(--muted);
+        font-size: 0.68rem;
+        font-weight: 750;
+        text-transform: uppercase;
+      }
+
+      .media-card-fields dd {
+        margin: 0;
+        font-size: 0.9rem;
+        font-weight: 700;
+        line-height: 1.25;
+      }
+
       .media-card-meta,
       .media-card-statuses {
         display: flex;
@@ -4726,6 +4759,25 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         gap: 4px;
       }
 
+      .media-card-actions button {
+        white-space: nowrap;
+      }
+
+      .print-status-editor {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+
+      .inline-form.hidden-print-form {
+        display: none;
+      }
+
+      .inline-form.hidden-print-form.is-open {
+        display: inline-flex;
+      }
+
       .mini-label {
         color: var(--muted);
         font-size: 0.68rem;
@@ -4740,18 +4792,6 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         color: var(--muted);
         font-size: 0.72rem;
         font-weight: 650;
-      }
-
-      .media-card-detail {
-        display: grid;
-        gap: 4px;
-        min-width: 0;
-        color: var(--muted);
-        font-size: 0.78rem;
-      }
-
-      .media-card-detail code {
-        color: var(--muted-strong);
       }
 
       .media-artwork {
@@ -4811,6 +4851,17 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
 
       button:hover {
         background: var(--accent-strong);
+      }
+
+      .secondary-button {
+        border-color: var(--line-strong);
+        background: var(--surface);
+        color: var(--muted-strong);
+      }
+
+      .secondary-button:hover {
+        background: var(--surface-subtle);
+        color: var(--text);
       }
 
       button:focus-visible,
@@ -5098,6 +5149,33 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         font-weight: 750;
       }
 
+      .status-assigned,
+      .status-printed {
+        background: var(--accent-soft);
+        color: var(--accent-strong);
+      }
+
+      .status-unassigned,
+      .status-not_printed {
+        background: var(--danger-soft);
+        color: var(--danger);
+      }
+
+      .status-queued {
+        background: var(--warning-soft);
+        color: #795710;
+      }
+
+      .status-pdf_generated {
+        background: #e8eef8;
+        color: #315d9b;
+      }
+
+      .status-pending {
+        background: var(--warning-soft);
+        color: #795710;
+      }
+
       .sonos-mode {
         display: inline-flex;
         align-items: center;
@@ -5379,6 +5457,17 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
           color: var(--accent-strong);
         }
 
+        .status-queued,
+        .status-pending {
+          background: var(--warning-soft);
+          color: #f3ce7a;
+        }
+
+        .status-pdf_generated {
+          background: #172f4f;
+          color: #9fc7ff;
+        }
+
         .sonos-mode.safe {
           background: var(--danger-soft);
           color: var(--danger);
@@ -5460,7 +5549,7 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
 
           if (tbody) {
             const columnCount = table.querySelectorAll("thead th").length || 1;
-            emptyRow.innerHTML = "<td colspan=\"" + columnCount + "\">No matching rows</td>";
+            emptyRow.innerHTML = '<td colspan="' + columnCount + '">No matching rows</td>';
             tbody.append(emptyRow);
           } else {
             emptyRow.textContent = "No matching items";
@@ -5481,6 +5570,20 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
             });
 
             emptyRow.classList.toggle("filtered-out", visibleCount > 0);
+          });
+        });
+
+        document.querySelectorAll("[data-toggle-print]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const editor = button.closest(".print-status-editor");
+            const form = editor ? editor.querySelector(".hidden-print-form") : null;
+
+            if (!form) {
+              return;
+            }
+
+            const isOpen = form.classList.toggle("is-open");
+            button.textContent = isOpen ? "Close" : "Edit";
           });
         });
       })();

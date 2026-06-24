@@ -4,7 +4,8 @@
   "description": "A tiny local scan receiver for a DIY NFC/RFID music box.",
   "main": "server.js",
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning server.js"
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "seed:dev": "node --disable-warning=ExperimentalWarning scripts/seed-local-dev-db.mjs"
   },
   "engines": {
     "node": ">=24"

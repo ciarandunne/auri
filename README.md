@@ -282,6 +282,17 @@ npm.cmd start
 
 Then open the UI and use the Spotify section to connect the account. The first Spotify test can target a listed Spotify Connect device such as an Echo speaker. Spotify track, album, playlist, and episode URLs are accepted. The Spotify section also stores the default device ID and a safe start volume, which defaults to `30`.
 
+For UI development without touching the live NAS data, seed a local mock database:
+
+```powershell
+cd "C:\Users\ciara\OneDrive\Documents\Kids Tunes"
+npm.cmd run seed:dev
+$env:AURI_DB_PATH="$env:LOCALAPPDATA\Auri\auri-local-dev.db"
+npm.cmd start
+```
+
+The mock DB includes representative cards, tracks, playlists, receivers, scans, action events, print statuses, assigned media, unassigned media, missing artwork, and a premium/restricted placeholder. It is safe to recreate whenever you need a fresh local UI dataset.
+
 The Playlists page can import a Spotify playlist into the local media library. After this feature was added, Spotify auth requests `playlist-read-private`; reconnect Spotify once after restarting so the saved token has the playlist scope.
 
 Premium or restricted podcast entries may appear in a Spotify playlist but come back through the Spotify API as an empty playlist item with no playable media object, title, URI, or ID. Auri currently skips those entries and includes them in the skipped count. The planned improvement is to show skipped playlist positions and reasons directly in the Playlists UI, including a `premium/restricted or unavailable` label when Spotify gives no media object.

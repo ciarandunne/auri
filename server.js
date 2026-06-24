@@ -3484,7 +3484,7 @@ function renderMediaLibrary(mediaItems, pendingAssignment = null) {
     return `<div class="empty">No media items yet. Spotify card actions will appear here after the app syncs them.</div>`;
   }
 
-  const rows = mediaItems
+  const cards = mediaItems
     .map(
       (item) => {
         const artworkUrl = localArtworkUrl(item.local_artwork_path);
@@ -3504,6 +3504,7 @@ function renderMediaLibrary(mediaItems, pendingAssignment = null) {
         const canAssign = item.assignment_status === "unassigned" && item.provider === "spotify";
         const printLabel = PRINT_STATUS_LABELS[item.print_status] || item.print_status;
         const playlistStatus = item.playlist_status === "removed_from_playlist" ? "removed" : "in playlist";
+        const artworkState = item.local_artwork_path ? "Artwork cached" : "No local artwork";
         const assignmentControl = isPending
           ? `
               <form class="inline-form" method="post" action="/media/assign-next/cancel">
@@ -3518,53 +3519,67 @@ function renderMediaLibrary(mediaItems, pendingAssignment = null) {
                   <button type="submit">Assign Next Card</button>
                 </form>
               `
-            : `<span class="muted small-text">No action</span>`;
+            : item.assignment_status === "assigned"
+              ? `<span class="action-status">Assigned</span>`
+              : `<span class="muted small-text">Not assignable</span>`;
 
         return `
-        <tr data-filter-row data-search="${escapeHtml(searchText.toLowerCase())}">
-          <td>
-            <div class="media-cell">
+        <article class="media-card" data-filter-row data-search="${escapeHtml(searchText.toLowerCase())}">
+          <div class="media-card-art">
               ${
                 artworkUrl
                   ? `<img class="media-artwork" src="${escapeHtml(artworkUrl)}" alt="">`
                   : `<div class="media-artwork placeholder"></div>`
               }
+          </div>
+          <div class="media-card-main">
+            <div class="media-card-title-row">
               <div>
                 <strong>${escapeHtml(item.title)}</strong>
                 <span class="small-text">${escapeHtml(item.subtitle) || `<span class="muted">No subtitle</span>`}</span>
               </div>
+              <span class="pill known">${escapeHtml(item.media_type)}</span>
             </div>
-          </td>
-          <td>
-            <span class="pill known">${escapeHtml(item.provider)}</span>
-            <span class="small-text">${escapeHtml(item.media_type)}</span>
-            ${
-              item.imported_from_title
-                ? `<span class="small-text">Imported from ${escapeHtml(item.imported_from_title)}</span>`
-                : ""
-            }
-            <span class="small-text">${escapeHtml(playlistStatus)}</span>
-          </td>
-          <td>
-            <code>${escapeHtml(item.provider_uri)}</code>
-            ${item.local_artwork_path ? `<span class="small-text">${escapeHtml(item.local_artwork_path)}</span>` : ""}
-          </td>
-          <td>
-            <span class="action-status">${escapeHtml(item.assignment_status)}</span>
-            <span class="small-text">${item.assigned_card_names.length ? escapeHtml(item.assigned_card_names.join(", ")) : "No card assigned"}</span>
-          </td>
-          <td>
-            <form class="inline-form print-status-form" method="post" action="/media/print-status">
-              <input type="hidden" name="media_item_id" value="${escapeHtml(item.id)}">
-              <select name="print_status" aria-label="Print status for ${escapeHtml(item.title)}">
-                ${renderPrintStatusOptions(item.print_status)}
-              </select>
-              <button type="submit">Save</button>
-            </form>
-            <span class="small-text">${escapeHtml(printLabel)}</span>
-          </td>
-          <td>${assignmentControl}</td>
-        </tr>
+
+            <div class="media-card-meta">
+              <span>${escapeHtml(item.provider)}</span>
+              ${
+                item.imported_from_title
+                  ? `<span>${escapeHtml(item.imported_from_title)}</span>`
+                  : ""
+              }
+              <span>${escapeHtml(playlistStatus)}</span>
+              <span>${escapeHtml(artworkState)}</span>
+            </div>
+
+            <div class="media-card-statuses">
+              <span class="action-status">${escapeHtml(item.assignment_status)}</span>
+              <span class="action-status">${escapeHtml(printLabel)}</span>
+            </div>
+
+            <div class="media-card-detail">
+              <span>${item.assigned_card_names.length ? escapeHtml(item.assigned_card_names.join(", ")) : "No card assigned"}</span>
+              <code>${escapeHtml(item.provider_uri)}</code>
+            </div>
+
+            <div class="media-card-actions">
+              <div>
+                <span class="mini-label">Print</span>
+                <form class="inline-form print-status-form" method="post" action="/media/print-status">
+                  <input type="hidden" name="media_item_id" value="${escapeHtml(item.id)}">
+                  <select name="print_status" aria-label="Print status for ${escapeHtml(item.title)}">
+                    ${renderPrintStatusOptions(item.print_status)}
+                  </select>
+                  <button type="submit">Save</button>
+                </form>
+              </div>
+              <div>
+                <span class="mini-label">Card</span>
+                ${assignmentControl}
+              </div>
+            </div>
+          </div>
+        </article>
       `;
       },
     )
@@ -3577,20 +3592,8 @@ function renderMediaLibrary(mediaItems, pendingAssignment = null) {
         <input type="search" placeholder="Title, show, card, status" data-filter-input="media-table">
       </label>
     </div>
-    <div class="table-wrap">
-      <table class="media-table" id="media-table">
-        <thead>
-          <tr>
-            <th>Media</th>
-            <th>Type</th>
-            <th>URI / Artwork</th>
-            <th>Assignment</th>
-            <th>Print</th>
-            <th>Next card</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
+    <div class="media-card-grid" id="media-table">
+      ${cards}
     </div>
   `;
 }
@@ -4651,6 +4654,106 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         align-items: center;
       }
 
+      .media-card-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+        gap: 12px;
+        padding: 14px;
+      }
+
+      .media-card {
+        display: grid;
+        grid-template-columns: 76px minmax(0, 1fr);
+        gap: 12px;
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: var(--surface);
+      }
+
+      .media-card:hover {
+        border-color: var(--line-strong);
+        box-shadow: 0 10px 24px rgba(23, 32, 42, 0.06);
+      }
+
+      .media-card-art {
+        width: 76px;
+        min-width: 76px;
+      }
+
+      .media-card .media-artwork {
+        width: 76px;
+        height: 76px;
+      }
+
+      .media-card-main {
+        display: grid;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .media-card-title-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .media-card-title-row strong {
+        display: block;
+        line-height: 1.25;
+      }
+
+      .media-card-meta,
+      .media-card-statuses {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+
+      .media-card-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: end;
+      }
+
+      .media-card-actions > div {
+        display: grid;
+        gap: 4px;
+      }
+
+      .mini-label {
+        color: var(--muted);
+        font-size: 0.68rem;
+        font-weight: 750;
+        text-transform: uppercase;
+      }
+
+      .media-card-meta span {
+        border-radius: 999px;
+        padding: 2px 7px;
+        background: var(--surface-subtle);
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 650;
+      }
+
+      .media-card-detail {
+        display: grid;
+        gap: 4px;
+        min-width: 0;
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
+
+      .media-card-detail code {
+        color: var(--muted-strong);
+      }
+
       .media-artwork {
         width: 46px;
         height: 46px;
@@ -5083,6 +5186,13 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
         text-align: center;
       }
 
+      .media-card-grid > .filter-empty-row {
+        grid-column: 1 / -1;
+        padding: 28px 16px;
+        color: var(--muted);
+        text-align: center;
+      }
+
       @media (max-width: 760px) {
         main {
           width: min(100% - 24px, 1500px);
@@ -5134,6 +5244,25 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
 
         .pending-assignment {
           display: grid;
+        }
+
+        .media-card-grid {
+          grid-template-columns: 1fr;
+          padding: 12px;
+        }
+
+        .media-card {
+          grid-template-columns: 62px minmax(0, 1fr);
+        }
+
+        .media-card-art,
+        .media-card .media-artwork {
+          width: 62px;
+          height: 62px;
+        }
+
+        .media-card-art {
+          min-width: 62px;
         }
       }
 
@@ -5325,11 +5454,18 @@ function renderPageShell(activePage, pageTitle, pageDescription, content) {
           }
 
           const rows = Array.from(table.querySelectorAll("[data-filter-row]"));
-          const columnCount = table.querySelectorAll("thead th").length || 1;
-          const emptyRow = document.createElement("tr");
+          const tbody = table.querySelector("tbody");
+          const emptyRow = document.createElement(tbody ? "tr" : "div");
           emptyRow.className = "filter-empty-row filtered-out";
-          emptyRow.innerHTML = "<td colspan=\"" + columnCount + "\">No matching rows</td>";
-          table.querySelector("tbody").append(emptyRow);
+
+          if (tbody) {
+            const columnCount = table.querySelectorAll("thead th").length || 1;
+            emptyRow.innerHTML = "<td colspan=\"" + columnCount + "\">No matching rows</td>";
+            tbody.append(emptyRow);
+          } else {
+            emptyRow.textContent = "No matching items";
+            table.append(emptyRow);
+          }
 
           input.addEventListener("input", () => {
             const query = input.value.trim().toLowerCase();

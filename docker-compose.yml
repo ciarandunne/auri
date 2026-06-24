@@ -8,6 +8,13 @@ services:
       - .env
     volumes:
       - ./data:/app/data
+      - ./server.js:/app/server.js:ro
+      - ./package.json:/app/package.json:ro
+      - ./package-lock.json:/app/package-lock.json:ro
+      - ./scripts:/app/scripts:ro
+      - ./README.md:/app/README.md:ro
+      - ./NEXT.md:/app/NEXT.md:ro
+      - ./NAS_DEPLOYMENT.md:/app/NAS_DEPLOYMENT.md:ro
     environment:
       HOST: 0.0.0.0
       PORT: 8787

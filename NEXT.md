@@ -4,6 +4,8 @@ Use this file as the first handoff note when picking up the project in a new cha
 
 The app/product is named **Auri**. Technical deployment identifiers now use Auri names such as `auri`, `AURI_DB_PATH`, and `auri.db`.
 
+Deployment workflow note: `docker-compose.yml` now bind-mounts the main app files into the container. After applying that compose update once with a Synology rebuild/recreate, future UI/server.js deploys should be copy files to `Z:\auri` plus restart container, not rebuild every time.
+
 ## Read These First
 
 1. `NEXT.md` - canonical handoff, immediate state, and next actions.
@@ -593,6 +595,7 @@ curl.exe -s http://127.0.0.1:8787/api/spotify/devices
    - Use fetched Spotify artwork.
    - Generate a PDF sheet sized for card stickers/labels.
    - Target credit-card-sized cards with labels slightly smaller than CR80 card size.
+   - Use date-stamped PDF filenames by default so print batches are preserved instead of overwritten.
    - Use the Spotify artwork exactly as-is: uncropped, unstretched, no text overlay, no badges.
    - Lay out square artwork labels with enough whitespace between them to cut cleanly with scissors.
    - Optionally add print/cut guides outside the artwork area, not on top of the image.

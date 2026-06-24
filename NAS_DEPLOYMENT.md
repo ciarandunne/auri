@@ -159,6 +159,45 @@ http://192.168.5.55:8787/
 
 If the NAS IP changes, use the current NAS IP.
 
+## Faster Code Deploys
+
+The compose file bind-mounts the main app files into the container:
+
+```text
+server.js
+package.json
+package-lock.json
+scripts/
+README.md
+NEXT.md
+NAS_DEPLOYMENT.md
+```
+
+This means the first time this compose update is applied, Synology still needs a rebuild/recreate so the project picks up the new volume configuration. After that, routine code and UI updates do not need a full rebuild.
+
+Recommended development workflow:
+
+1. Develop locally with the seeded mock database.
+2. Commit/push the code when happy.
+3. Copy files to the NAS deployment folder.
+4. Restart the `auri` container.
+5. Check `/health`.
+
+From Windows:
+
+```powershell
+cd "C:\Users\ciara\OneDrive\Documents\Kids Tunes"
+.\scripts\deploy-to-nas.ps1
+```
+
+That copies the latest project files to:
+
+```text
+Z:\auri
+```
+
+For the first bind-mount deployment, rebuild/recreate the `auri` project once in Synology Container Manager. For later code-only updates, restart the `auri` container instead of rebuilding.
+
 ## Validation Checklist
 
 1. Open:

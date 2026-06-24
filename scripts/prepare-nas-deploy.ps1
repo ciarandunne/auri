@@ -41,7 +41,11 @@ $files = @(
   "server.js",
   ".env",
   ".env.example",
-  "NAS_DEPLOYMENT.md"
+  "README.md",
+  "NEXT.md",
+  "NAS_DEPLOYMENT.md",
+  "M5DIAL_PLAN.md",
+  "PROJECT_STATUS.md"
 )
 
 foreach ($file in $files) {
@@ -58,6 +62,12 @@ if (Test-Path $DataSource) {
 
     Copy-Item -LiteralPath $item.FullName -Destination $DataTarget -Recurse -Force
   }
+}
+
+$ScriptsTarget = Join-Path $OutputPath "scripts"
+New-Item -ItemType Directory -Path $ScriptsTarget | Out-Null
+Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "scripts") -File | ForEach-Object {
+  Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $ScriptsTarget $_.Name)
 }
 
 Write-Host "Auri NAS deployment folder prepared:"
